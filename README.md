@@ -131,13 +131,30 @@ uv run python -m app.weights vocals
 | `PITCHMORPH_DATA_DIR` | `./data` | 任务目录与权重缓存的根 |
 | `PITCHMORPH_FFMPEG` | 内置 → 系统 PATH | 指定 ffmpeg 可执行文件路径，优先于内置版 |
 | `PITCHMORPH_PROVIDERS` | 自动探测 | 传给 ONNX Runtime 的执行器，逗号分隔。不设时启动会**真探针**一次 CUDA（建一个最小 session 并试跑），可用则用 GPU，否则回落 CPU；显式设置则无条件优先，可用来强制 CPU 或强制 GPU |
-| `PITCHMORPH_PARALLEL` | `1` | 四轨集成档同时运行的专家数（1–4）。实测 16 核机器上 2 并发**更慢**（60 s 片段 85 s → 143 s）且内存涨到约 10 GB，所以默认 1；核数更多的机器可自行上调，见 [docs/perf-audit.md](docs/perf-audit.md) |
+| `PITCHMORPH_PARALLEL` | `1` | 四轨集成档同时运行的专家数（1–4），也是前端「并发专家」控件的初始值。实测 2 并发在 GPU 上**不快反慢**（单块 0.70 → 1.38 s）且显存翻倍（3.3 → 6.3 GB），CPU 上同样更慢，所以默认 1；控件保留给想自己验证的人，见 [docs/perf-audit.md](docs/perf-audit.md) |
+| `PITCHMORPH_CUDA_OPTS` | 见下节 | 覆盖或追加传给 CUDA 执行器的选项（`k=v,k=v`），用于对比显存与速度；非法项会被忽略并记一条警告 |
 | `HF_ENDPOINT` | 官方源 | 国内网络可设为 `https://hf-mirror.com` |
 
 ```powershell
 $env:HF_ENDPOINT = "https://hf-mirror.com"
 uv run uvicorn app.main:app --port 8000
 ```
+
+## 显存占用（GPU）
+
+模型会话**不常驻**：一个专家跑完就释放，下一批重新加载（约 4 秒/专家）。这是为 8 GB 笔记本显卡做的取舍——单个专家的 CUDA arena 会涨到约 3.2 GB 且不回缩，四个同时驻留直接 OOM。
+
+默认选项是按「一次只跑一个模型」调的：
+
+| 选项 | 值 | 理由 |
+|---|---|---|
+| `arena_extend_strategy` | `kSameAsRequested` | 按实际申请量扩张，不按 2 的幂预留 |
+| `cudnn_conv_algo_search` | `HEURISTIC` | 不逐形状试算法，省首次时间也省显存 |
+| `enable_mem_pattern` | `False` | 关闭中间张量预分配，峰值 5.7 → 3.3 GiB |
+
+实测（RTX 5060 Laptop 8 GB，整首 398.9 秒）：单专家显存峰值 **3309 MiB**、全流程 54.7 秒；四轨质量档峰值同样是 3309 MiB，因为每批释放后不累积。
+
+想自己对比，用 `PITCHMORPH_CUDA_OPTS` 覆盖（例如 `arena_extend_strategy=kNextPowerOfTwo`），数据和结论见 [docs/perf-audit.md](docs/perf-audit.md)。
 
 ## 使用限制
 
@@ -169,8 +186,10 @@ uv run uvicorn app.main:app --port 8000
 ```
 app/
 ├── config.py      # 路径、上限、档位、ffmpeg 三级探测
-├── runtime.py     # 执行器选择：CUDA 真探针、CPU 兜底、会话常驻与预热
-├── separator.py   # 解码规整 + 自管分块推理（唯一的 demucs-onnx 接触点）
+├── runtime.py     # 执行器选择、CUDA 真探针、会话建立/释放、显存选项
+├── media.py       # 解码规整 + 容器探测（soundfile 优先，ffmpeg 兜底）
+├── separator.py   # 自管分块推理（唯一的 demucs-onnx 推理入口）
+├── errors.py      # 共享异常与用户可读的错误翻译
 ├── jobs.py        # 内存任务表 + 单 worker 队列 + 取消 + TTL 清理
 ├── schemas.py     # 接口数据结构
 ├── main.py        # FastAPI 路由与静态挂载
@@ -181,7 +200,7 @@ frontend/
 └── src/           # Vue 3 + TS：App.vue、components/、api/、styles/
 scripts/
 ├── setup.py          # 诊断 CUDA 可用性；--apply 等同 uv sync
-├── bench.py          # 端到端计时，拆解码/加载/推理/写盘
+├── bench.py          # 端到端计时（解码/加载/推理/写盘）+ GPU 显存峰值采样
 ├── smoke_offline.py  # 分轨流程回归，不需要权重
 └── smoke_media.py    # 容器格式回归（mp4 / m4s / 无音轨 / 超长）
 data/

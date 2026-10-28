@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class JobStage(str, Enum):
@@ -54,6 +54,9 @@ class ModelInfo(BaseModel):
     eta: str
     detail: str
     cached: bool
+    #: Whether a concurrency setting means anything for this tier: one specialist
+    #: (single-stem tiers) or one single-file graph has nothing to overlap.
+    parallelizable: bool = False
 
 
 class HealthResponse(BaseModel):
@@ -76,3 +79,5 @@ class HealthResponse(BaseModel):
     max_duration_sec: int
     default_parallel: int = 1
     max_parallel: int = 4
+    #: Provider options actually passed to CUDA sessions. Empty when on CPU.
+    cuda_options: dict[str, str] = Field(default_factory=dict)

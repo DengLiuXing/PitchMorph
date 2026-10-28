@@ -17,7 +17,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import config, jobs, runtime, separator
+from . import config, jobs, media, runtime, separator, weights
+from .errors import UnsupportedFormat
 from .schemas import (
     HealthResponse,
     JobCreateResponse,
@@ -69,21 +70,11 @@ async def lifespan(_: FastAPI):
             reason,
         )
 
-    # Warm the default tier off the critical path: on CUDA the first session
-    # build compiles the graph, which would otherwise land on the first upload.
-    tier = config.TIERS[config.DEFAULT_TIER]
-
-    async def warm() -> None:
-        await run_in_threadpool(runtime.prewarm, tier.model, tier.stems)
-
-    warm_task = asyncio.create_task(warm())
-
     try:
         yield
     finally:
-        warm_task.cancel()
         task.cancel()
-        jobs.registry._pool.shutdown(wait=False)  # noqa: SLF001 - process exit
+        jobs.registry.shutdown()
 
 
 app = FastAPI(title="PitchMorph", version="0.1.0", lifespan=lifespan)
@@ -139,7 +130,10 @@ def list_models() -> list[ModelInfo]:
             download_mb=tier.download_mb,
             eta=tier.eta,
             detail=tier.detail,
-            cached=separator.weights_cached(tier.model, tier.stems),
+            cached=weights.weights_cached(tier.model, tier.stems),
+            parallelizable=(
+                len(tier.stems) > 1 and tier.model not in config.SINGLE_FILE_MODELS
+            ),
         )
         for tier in tiers
     ]
@@ -168,6 +162,7 @@ def health() -> HealthResponse:
         max_duration_sec=config.MAX_DURATION_SEC,
         default_parallel=config.default_parallel(),
         max_parallel=config.MAX_PARALLEL,
+        cuda_options=runtime.session_options_summary(),
     )
 
 
@@ -189,6 +184,12 @@ async def create_job(
     # One specialist per stem: asking for more than the stem count would be
     # echoed back to the UI as a concurrency the job never has.
     parallel = min(parallel, len(config.TIERS[tier].stems))
+    # Same reasoning for tiers that cannot overlap at all: a single-stem tier has
+    # one expert, a single-file model runs all stems in one graph. The UI hides
+    # the control for those, but PITCHMORPH_PARALLEL must not leak in either.
+    selected = config.TIERS[tier]
+    if len(selected.stems) <= 1 or selected.model in config.SINGLE_FILE_MODELS:
+        parallel = 1
     if jobs.registry.active_count() >= config.MAX_QUEUED_JOBS:
         raise HTTPException(
             status_code=429,
@@ -200,7 +201,8 @@ async def create_job(
         raise HTTPException(
             status_code=415,
             detail=(
-                f"不支持 {suffix or '(无扩展名)'}：本机未安装 ffmpeg，只能读 "
+                f"不支持 {suffix or '(无扩展名)'}：ffmpeg 不可用（imageio-ffmpeg 可能损坏，"
+                f"重跑 uv sync 可修复），只能读 "
                 f"{', '.join(sorted(config.NATIVE_EXTS))}"
             ),
         )
@@ -233,7 +235,7 @@ async def create_job(
         # spend time transcoding it.
         if suffix not in config.NATIVE_EXTS:
             probed, has_audio = await run_in_threadpool(
-                separator.probe_with_ffmpeg, raw_path,
+                media.probe_with_ffmpeg, raw_path,
             )
             if not has_audio:
                 raise HTTPException(
@@ -250,8 +252,8 @@ async def create_job(
                 )
 
         try:
-            duration = await run_in_threadpool(separator.decode_to_wav, raw_path, job.input_wav)
-        except separator.UnsupportedFormat as exc:
+            duration = await run_in_threadpool(media.decode_to_wav, raw_path, job.input_wav)
+        except UnsupportedFormat as exc:
             raise HTTPException(status_code=415, detail=str(exc)) from exc
 
         if duration < 1:

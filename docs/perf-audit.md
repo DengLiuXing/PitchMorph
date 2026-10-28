@@ -249,3 +249,159 @@ bench_e2e.py     端到端插桩     → out/e2e.json（含 276 条 run 序列�
 
 - 全曲 `parallel=2` 的实际耗时（本轮没跑完）；短样本的 143.4 s 里还含两次 session 加载（约 14 s）。
 - `parallel=4` 未测。
+
+---
+
+## 2026-10-28 · CUDA 显存与「不常驻」
+
+一次 `quality` 档任务在 RTX 5060 Laptop（**8151 MiB**）上崩了：
+
+```
+CUDA failure 2: out of memory
+expr=cudaMemcpy(dst_data, src_data, bytes, cudaMemcpyHostToDevice)
+```
+
+失败点是**把 2.7 MB 的输入拷进显存**——设备已经满了，不是这次推理吃得多。随后一串 `cudnnDestroy ... CUDNN_STATUS_INTERNAL_ERROR` 是坏掉的 context 在退出时的次生现象，不是独立问题。
+
+### 实测
+
+逐个加载 `htdemucs_ft` 的四个专家，各跑一个真实分块：
+
+| 状态 | 显存 |
+|---|---|
+| 空载 | 96 MiB |
+| + drums | 3308 MiB |
+| + bass | 6534 MiB |
+| + other | 7814 MiB |
+| + vocals | 7836 MiB |
+
+**一个专家跑完一个分块后要占 2.2–3.2 GB**，而刚建好时只有 ~700 MiB——CUDA arena 按 `kNextPowerOfTwo` 增长，跑完不回缩。
+
+旧策略 `MAX_RESIDENT_SESSIONS = 4`（"the whole bag stays resident"）是 CPU 时代的假设：CPU 上常驻只花内存、省 4 s 加载。到 GPU 上四个专家 = 7.8 GB，加桌面占用必然 OOM。
+
+### 决策：会话不常驻
+
+每批结束即 `sessions.clear()` + `session_pool().clear()`。实测重建成本：
+
+```
+round 0: build 3.9s  first chunk 1.2s
+round 1: build 4.0s  first chunk 0.7s
+round 2: build 4.1s  first chunk 0.7s
+```
+
+约 **4 s/专家**（CUDA 图编译为主，与磁盘缓存无关），`quality` 档四个专家合计 16 s——远小于一次失败重来的代价。
+
+释放顺序有讲究：`clear()` 只断开池里的引用，局部字典仍吊着 session 时显存不会还，所以必须先 `sessions.clear()`。
+
+### 仍未解决的问题
+
+即使每批只留一个 session，**单个 session 在跑第 2 个分块时 arena 仍会从 3.4 GB 涨到 ~7.5 GB**（12 s 素材，2 个分块）。也就是说 8 GB 卡上现在只是"刚好跑完"，浏览器再占 1 GB 就会重新 OOM。
+
+根因是 `kNextPowerOfTwo` 的分配策略。修法是给 CUDA session 传：
+
+```python
+("CUDAExecutionProvider", {"arena_extend_strategy": "kSameAsRequested"})
+```
+
+空载 session 实测 704 → 516 MiB（-27%），峰值未测。**但 `demucs_onnx.SessionPool` 的 key 只含 provider 名字、不含选项**，要传就得自己建 session（我们本来就已经不用它的 `separate()`，会话缓存其实该归 `runtime` 管）。这一步尚未实施。
+
+---
+
+## 2026-10-28 · 会话归口与显存实测（已实施）
+
+上一节的「仍未解决」已经修完。改动集中在 `app/runtime.py`：会话缓存从 `demucs_onnx.SessionPool` 收回 `runtime._SESSIONS`，第一次有了传 CUDA provider options 的地方。文中此前的 `session_pool().clear()` 现在一律是 `runtime.release_sessions()`。
+
+### 生效的选项
+
+| 选项 | 值 | 作用 |
+|---|---|---|
+| `arena_extend_strategy` | `kSameAsRequested` | arena 按实际申请量扩张，不再按 2 的幂预留 |
+| `cudnn_conv_algo_search` | `HEURISTIC` | 跳过逐形状 benchmark，不保留试探过程中的最大 workspace |
+| `enable_mem_pattern`（SessionOptions） | `False` | 关掉按形状的中间张量预分配，**降幅最大的一项** |
+
+`PITCHMORPH_CUDA_OPTS="k=v,k=v"` 可覆盖或追加前两项，做 A/B 不必改代码。
+
+### 逐步显存（vocals 专家，单 session）
+
+| 阶段 | 修复前 | 修复后 |
+|---|---|---|
+| 空载 build | 704 MiB | 615 MiB |
+| 跑完第 1 块 | 3245 MiB | 3245 MiB |
+| 跑完第 2 块 | **5675 MiB** | **3245 MiB** |
+| 跑完第 3 块 | 5675 MiB | 3245 MiB |
+| `release_sessions()` 后 | 195 MiB | 195 MiB |
+
+第 2 块那 2.4 GB 的台阶来自 memory pattern：形状固定时它为每个中间张量各留一块，生命周期不重叠的也不复用。关掉后峰值从第一块起就是稳态。
+
+`cudnn_conv_use_max_workspace=0` 单独试过，**显存与耗时都完全不变**（5739 MiB / 0.704 s），可以直接排除 cuDNN workspace 这条假设。
+
+### 端到端（`bench.py`，含显存采样）
+
+| 场景 | 加载 | 推理 | 单块中位 | 显存峰值 | 全流程 |
+|---|---|---|---|---|---|
+| vocals / 12 s | 4.34 s | 2.7 s | 0.752 s | 3309 MiB | 7.3 s |
+| vocals / 60 s | 3.97 s | 8.2 s | 0.704 s | 3309 MiB | 12.5 s |
+| vocals / 398.9 s（整首，69 块） | 3.95 s | 49.5 s | 0.715 s | 3309 MiB | 54.7 s（RTF 0.14） |
+| quality / 60 s（四专家） | 16.16 s | 31.9 s | 0.716 s | 3309 MiB | 48.8 s（RTF 0.81） |
+
+quality 档峰值与单专家**相同**，证明每批释放真的把显存还回去了。修复前同一场景是 7836 MiB 且 OOM。
+
+单块 0.704 s 与 `kNextPowerOfTwo` 时代的 0.702 s 一致，说明关闭 mem pattern 没有付出耗时代价。
+
+同一段 60 s 素材的 CPU 基线（`PITCHMORPH_PROVIDERS=CPUExecutionProvider`）：
+
+| | CPU | GPU | 倍数 |
+|---|---|---|---|
+| 单块中位 | 1.412 s | 0.704 s | **2.01×** |
+| 推理（11 块） | 15.7 s | 8.2 s | 1.91× |
+| 全流程 | 22.9 s | 12.5 s | 1.83× |
+
+比 `kNextPowerOfTwo` 时期的 1.75× 略好，两次的差异在温度/电源漂移范围内——关键是显存优化没有牺牲速度。
+
+### 归因：库特性 vs 程序问题
+
+| 来源 | 归属 | 证据 |
+|---|---|---|
+| arena 只增不减、按 2 的幂扩张 | 库的默认值 | 空载 615 MiB → 跑一块 3.2 GB |
+| arena 挂在 `InferenceSession` 上，不能跨 session 共享 | 库的架构 | 四专家 = 四份 arena = 7.8 GB |
+| memory pattern 为不重叠的中间张量各留一块 | 库的默认值 | 3.2 → 5.7 GB 的台阶，关掉即消失 |
+| cuDNN workspace 取最大候选 | **已排除** | `use_max_workspace=0` 无任何变化 |
+| `SessionPool` 的 key 只有 provider 名字、没有选项 | **程序** | 项目没有任何传参通道，只能吃默认值 |
+| 四专家常驻、启动预热多建一个 session | **程序**（已修） | `MAX_RESIDENT_SESSIONS` 已删、`prewarm` 已删 |
+
+结论：**主要是库的默认策略面向长驻服务，程序的问题在于没有绕开池子去改它。** 不是库有 bug，但也别指望默认值在 8 GB 笔记本上能用。
+
+### 报错文案
+
+OOM 不再把 ORT 的 `expr=cudaMemcpy(...)` 原样抛给用户。`app/errors.py` 的 `friendly_error()` 现在识别 `out of memory` / `CUDA failure 2` / `cudaErrorMemoryAllocation` / `OrtOutOfMemoryError`，翻译成三步可操作提示（关掉占显存的程序 → 换仅人声档 → `PITCHMORPH_PROVIDERS=CPUExecutionProvider` 强制 CPU），并保留原始错误首行供排查。
+
+### 并发开关：允许调，但实测是负优化
+
+CUDA 下不再把 `parallel` 夹回 1（`jobs.py` 那段 clamp 已删），前端加了「并发专家」控件并标注实验性。实测（`samples/物凄.m4s`，12 s，quality 档）：
+
+| | parallel=1 | parallel=2 |
+|---|---|---|
+| 单块中位 | 0.716 s（60 s 素材，44 次 run） | **1.381 s**（12 s 素材，12 次 run） |
+| 显存峰值 | 3309 MiB | **6330 MiB** |
+| 单专家推理 3 块 | 约 2.1 s | 约 4.1 s |
+
+两个专家同时跑并没有把单块切短——它们抢同一块 GPU，单块耗时正好翻倍，总吞吐不变，显存却翻倍。这与 CPU 上 `parallel=2` 85 s → 143 s 同向：单 session 已经吃满设备，并发只是把同一份算力切成两半。
+
+所以这个开关的定位是「让用户自己验证」，不是提速手段。默认 1，UI 文案直接写实测数字，避免有人开了之后以为变快。
+
+### 未验证
+
+- 数值一致性：`HEURISTIC` 换了卷积算法，理论上应有 1e-6 级差异。本轮比对脚本被取消，**尚未实测**。按 `_chunked_infer` 的验收规矩，跑 `demucs_onnx.separate(model="htdemucs_ft_vocals", precision="fp16weights")` 与本地路径逐采样比对，max abs diff 应 < 1e-3。
+- 整首 `quality`（四专家 × 69 块）未跑，只用 60 s 素材验证了四专家依次加载与释放。
+- `parallel=3` / `4` 未实测，按每专家约 3.2 GB 推算，8 GB 卡上必然 OOM；UI 的提示就是按这个判断写的。
+- 电源方案仍是「平衡」，以上耗时未在「高性能」下重测。
+
+### 复现
+
+`scripts/_cold_probe.py` 的逐步探测（build / 首块 / 重建成本）已并入 `bench.py` 的显存采样，那个脚本留作应急，不再是必跑项。
+
+```powershell
+uv run python scripts/bench.py samples/美丽之物.mp3 --tier vocals    # 单专家整首 + 显存峰值
+uv run python scripts/bench.py samples/美丽之物.mp3 --tier quality   # 四专家依次
+$env:PITCHMORPH_CUDA_OPTS="arena_extend_strategy=kNextPowerOfTwo"     # 对照旧行为
+```

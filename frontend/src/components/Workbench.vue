@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import { api } from '@/api/client'
 import { baseName, fmtTime } from '@/api/format'
 import { STEM_LABELS, STEM_ORDER, type Job } from '@/api/types'
 
@@ -54,7 +55,7 @@ const gains = new Map<string, GainNode>()
 let ctx: AudioContext | null = null
 let raf = 0
 
-const zipUrl = computed(() => `/api/jobs/${props.job.id}/download`)
+const zipUrl = computed(() => api.downloadZip(props.job.id))
 const ratio = computed(() => (duration.value ? Math.min(1, position.value / duration.value) : 0))
 const progressPct = computed(() => `${(ratio.value * 100).toFixed(3)}%`)
 const playheadX = computed(() => `${headOffset.value + ratio.value * waveWidth.value}px`)

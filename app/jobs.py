@@ -16,7 +16,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config, runtime, separator
+from . import config, separator
+from .errors import Canceled, SeparationError, friendly_error
 from .schemas import JobStage
 
 log = logging.getLogger("pitchmorph.jobs")
@@ -100,18 +101,12 @@ class JobRegistry:
         tier: config.ModelTier,
         parallel: int = 1,
     ) -> Job:
-        # Two specialists on one GPU split the same compute and double the
-        # VRAM, so concurrency only ever helps on CPU. Clamped here rather than
-        # in the worker so the echoed job state never promises a parallelism
-        # the run does not have.
-        if parallel > 1 and runtime.using_cuda():
-            log.info(
-                "parallel %d clamped to 1 — CUDA mode gains nothing from "
-                "concurrent specialists",
-                parallel,
-            )
-            parallel = 1
-
+        # Concurrency is the caller's call, GPU included. On CUDA it is a VRAM
+        # gamble rather than a speed-up: each in-flight specialist owns its own
+        # arena (measured ~3.2 GB), so two barely fit an 8 GB card and four do
+        # not. The UI labels the control experimental; the job echoes back what
+        # was asked for, so an out-of-memory failure is explainable after the
+        # fact instead of looking like a server bug.
         job_id = uuid.uuid4().hex
         job_dir = config.JOBS_DIR / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -145,6 +140,10 @@ class JobRegistry:
     def submit(self, job: Job) -> None:
         job.stage = JobStage.QUEUED
         self._pool.submit(self._process, job)
+
+    def shutdown(self) -> None:
+        """Stop the worker pool on app exit; queued work is dropped, not run."""
+        self._pool.shutdown(wait=False, cancel_futures=True)
 
     def cancel(self, job: Job) -> None:
         job.cancel.set()
@@ -231,17 +230,17 @@ class JobRegistry:
                 on_progress=on_progress,
                 should_cancel=job.cancel.is_set,
             )
-        except separator.Canceled:
+        except Canceled:
             job.stage = JobStage.CANCELED
             job.stem = None
             job.done = 0
-        except separator.SeparationError as exc:
+        except SeparationError as exc:
             job.stage = JobStage.ERROR
             job.error = str(exc)
             log.error("job %s failed: %s", job.id, exc)
         except Exception as exc:  # unexpected — keep the job queryable
             job.stage = JobStage.ERROR
-            job.error = separator.friendly_error(exc)
+            job.error = friendly_error(exc)
             log.exception("job %s crashed", job.id)
         else:
             job.stems = {

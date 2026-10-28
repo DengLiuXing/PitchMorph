@@ -28,10 +28,10 @@ MAX_DURATION_SEC = 12 * 60
 MAX_QUEUED_JOBS = 3
 JOB_TTL_SEC = 24 * 3600
 
-#: Sessions kept alive between jobs. On CUDA a rebuild means a graph compile,
-#: so the whole specialist bag stays resident; the cap is headroom for a future
-#: 6-stem model rather than something the current four reach.
-MAX_RESIDENT_SESSIONS = 4
+#: Sessions are released after every batch rather than kept resident: one
+#: specialist holds ~3 GB of VRAM once its arena has grown, so four of them
+#: exceed an 8 GB laptop card. Rebuilding costs ~4 s on CUDA — cheaper than an
+#: out-of-memory failure. Numbers in ``docs/perf-audit.md``.
 
 #: Our output is WAV, so the fp16 weights variant is strictly better: half the
 #: download, identical runtime precision (the graph still computes in fp32).

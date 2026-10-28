@@ -43,6 +43,21 @@ uv run demucs-onnx list-models           # 核对模型别名，别凭文档猜�
 
 ## 架构
 
+### 模块分层
+
+```
+errors    ← 共享异常类型 + 用户可读的错误翻译（无项目内依赖）
+config    ← 常量、档位定义、ffmpeg 三级探测
+weights   ← 权重清单、可取消下载、缓存路径解析
+media     ← 解码与容器探测（soundfile 优先，ffmpeg 兜底）
+runtime   ← 执行器选择、session 建立/释放、CUDA 显存选项
+separator ← 分块推理与批调度，唯一调用 InferenceSession 的模块
+jobs      ← 内存任务表 + 单 worker 队列
+main      ← HTTP 路由与静态托管
+```
+
+依赖只能向下，不能反向，跨层调用一律用函数内延迟导入。
+
 ### 一次请求的完整路径
 
 ```
@@ -50,8 +65,8 @@ POST /api/jobs (multipart: file + tier + parallel)
   └─ main.create_job
        ├─ config.can_accept(suffix)          # 有 ffmpeg 就不按白名单拦
        ├─ 流式落盘 data/jobs/{id}/source.*   # 边写边卡 300 MB 上限
-       ├─ separator.probe_with_ffmpeg()      # 仅容器类：读头部拿时长 + 是否有音轨
-       ├─ separator.decode_to_wav()          # → data/jobs/{id}/input.wav（44.1k / 立体声 / PCM16）
+       ├─ media.probe_with_ffmpeg()          # 仅容器类：读头部拿时长 + 是否有音轨
+       ├─ media.decode_to_wav()              # → data/jobs/{id}/input.wav（44.1k / 立体声 / PCM16）
        └─ jobs.registry.submit()             # 入队，立即 202 + job_id
 
 GET /api/jobs  ← 前端 900ms 轮询（只在有活跃任务时）
@@ -62,7 +77,7 @@ DELETE /api/jobs/{id}、POST /{id}/cancel、POST /{id}/retry、GET /{id}/downloa
 
 ### 解码层：两条路，永不交叉
 
-`separator.decode_to_wav` 先试 `soundfile`（libsndfile，覆盖 wav/flac/mp3/ogg/aiff），失败才调 ffmpeg。ffmpeg 的参数是 `-map 0:a:0 -c:a pcm_s16le`——**明确只取第一条音轨**，视频画面整段丢弃。这条规则让 mp4 / m4s / mkv / ts 全部走同一条代码路径。
+`media.decode_to_wav` 先试 `soundfile`（libsndfile，覆盖 wav/flac/mp3/ogg/aiff），失败才调 ffmpeg。ffmpeg 的参数是 `-map 0:a:0 -c:a pcm_s16le`——**明确只取第一条音轨**，视频画面整段丢弃。这条规则让 mp4 / m4s / mkv / ts 全部走同一条代码路径。
 
 ffmpeg 的来源由 `config.resolve_ffmpeg()` 决定，顺序是 `PITCHMORPH_FFMPEG` → **内置**（`imageio-ffmpeg`，随 venv 落盘）→ 系统 PATH。内置优先是刻意的：保证任何机器上解码行为一致，不被用户装的版本带偏。
 
@@ -81,10 +96,14 @@ ffmpeg 的来源由 `config.resolve_ffmpeg()` 决定，顺序是 `PITCHMORPH_FFM
 
 ### 批式并发：为什么不是一个线程池跑四个专家
 
-`separate_stems` 按 `parallel`（`PITCHMORPH_PARALLEL`，默认 1，上限 `config.MAX_PARALLEL`=4）把 stem 切批：**批内主线程预建 session → 并发跑 `_chunked_infer` → 全部 join → 写盘 → 下一批**。session 池**不在每批后清空**：整个任务结束后 `finally` 里跑 `_trim_sessions()`，只有池大小超过 `MAX_RESIDENT_SESSIONS`（4）才 clear，这样跨任务能复用已加载的 158 MB 图。三条约束决定了这个形状：
+`separate_stems` 按 `parallel`（`PITCHMORPH_PARALLEL`，默认 1，上限 `config.MAX_PARALLEL`=4）把 stem 切批：**批内主线程预建 session → 并发跑 `_chunked_infer` → 全部 join → 写盘 → `sessions.clear()` + `_release_sessions()` → 下一批**。
 
-- `SessionPool.get()` 是**无锁**的 get-or-create，并发 miss 会 race，所以 session 只能由主线程预建。
-- `SessionPool.clear()` 清的是**整个进程级池**，并行时调用会清掉别的 worker 正在用的 session，所以只能在所有 worker join 之后调用——这也是它被放进 `finally` 的原因。
+**会话不常驻**，这是踩过 OOM 之后改的：一个专家跑完一个分块后 CUDA arena 会涨到约 3.2 GB 且自行不回缩，四个专家同时驻留就顶穿 8 GB 笔记本显卡。现在每批结束（`finally` 里也有一次兜底）就丢弃，重建代价实测约 4 s/专家——比 OOM 划算得多。顺序不能反：先 `sessions.clear()` 丢掉局部字典里的引用，再 `runtime.release_sessions()` 清缓存，否则 session 会被字典吊住、显存不还。
+
+三条约束决定了这个形状：
+
+- `runtime.ensure_session()` 内部虽然有锁，session 仍由主线程预建：并发建图会同时抬两份显存峰值。
+- `runtime.release_sessions()` 清的是**整个进程级缓存**，并行时调用会清掉别的 worker 正在用的 session，所以只能在所有 worker join 之后调用——这也是它被放进 `finally` 的原因。
 - 单 session 已经吃满物理核（线程扫描：默认 1.19 s 最优，24 线程反而 1.80 s），给一个 session 加 `intra_op_num_threads` 只会更慢，只能靠多个独立 session 重叠。
 
 峰值内存**不是**"批大小 × 0.6 GB"：ORT 的 CPU arena 会随线程数膨胀。实测 `parallel=2` 处理 60 s 片段时 WorkingSet 就到约 10 GB，全曲跑到 10.2 GB 时进程被系统终止——所以默认并行度是 1，只有核数远多于 24 的机器才值得调大。`parallel` 会被 `min(parallel, len(tier.stems))` 夹住，所以单轨档位（vocals）恒为 1，前端对应控件置灰。
@@ -113,7 +132,9 @@ ffmpeg 的来源由 `config.resolve_ffmpeg()` 决定，顺序是 `PITCHMORPH_FFM
 
 列表状态来自 `GET /api/jobs`，不是前端内存，所以刷新不丢；轮询只在存在活跃任务时启动，任务完成后自己停。
 
-**并行度目前只能走环境变量**：后端 `POST /api/jobs` 接受 `parallel`（1–4，缺省取 `/api/health` 的 `default_parallel`），但当前前端 `App.vue` 恒传 `1`——添加任务卡片里没有并发控件，`.parallel*` 那套 CSS 与 `TaskBoard` 的「并发 N」分支是上一次迭代的残留。要恢复 UI，接上控件即可；要临时提速，用 `PITCHMORPH_PARALLEL`。
+**并发控件（`ParallelPicker.vue`）是实验性的，而且实测是负优化**：只有四轨集成档能用它，`ModelInfo.parallelizable` 为假时置灰——仅人声档只有 1 个专家，四轨快速档是单文件模型，两者都没有可并行的对象。后端不再在 CUDA 下把 `parallel` 夹回 1，`POST /api/jobs` 原样接受 1–4，任务卡片会照实显示「并发 N」。
+
+实测并发 2 个（`samples/物凄.m4s`，quality 档，RTX 5060 Laptop）：单块 0.70 → 1.38 s，显存 3.3 → 6.3 GB。两个专家抢同一块 GPU，单块耗时翻倍，总吞吐不变而显存翻倍——和 CPU 上 `parallel=2` 85 s → 143 s 同向。**具体倍数随机型、驱动、显卡档位变化，别把这些数字当普适规律，也别写进 UI**；界面只讲「一个专家就能跑满 GPU 算力，建议保持 1」。默认 1，`PITCHMORPH_PARALLEL` 仍是服务端默认值，前端只是把它显示出来。
 
 工作台用单个 `AudioContext` + 每轨一个 `MediaElement` + `GainNode`：播放时以第一轨为主时钟，`requestAnimationFrame` 里检测漂移（>80ms 就校正）。波形不调 `decodeAudioData`，而是直接解析 PCM16 WAV 字节算峰值——省掉一份 float32 的 AudioBuffer。已播放部分是叠在灰波形上的第二张 canvas，靠 `clip-path: inset(0 calc(100% - var(--p)) 0 0)` 裁切，避免每帧重绘。
 
@@ -134,6 +155,8 @@ data/models/         # HF 权重缓存（cache 布局，别手放文件进来）
 ## 硬约束
 
 - **改完并行或分块逻辑必须重跑**：`uv run python scripts/smoke_offline.py` 全过，且 parallel=1 与 parallel=2 跑同一首曲子的四轨输出逐采样比对 max abs diff < 1e-3（并发不应改变数值）。
+- **会话归 `app/runtime.py` 管，不要退回 `demucs_onnx.SessionPool`**：那个池的 key 是 `(path, "", tuple(providers))`，只认 provider 名字、不认选项，`arena_extend_strategy` / `cudnn_conv_algo_search` 这类参数根本传不进去。要改显存行为，走 `runtime._build_session()` 或 `PITCHMORPH_CUDA_OPTS`。
+- **`enable_mem_pattern` 必须保持 `False`**：每块输入形状完全相同，默认开启时 memory pattern 会给每个中间张量各留一块连续内存（生命周期不重叠的也不复用），实测峰值 3.2 → 5.7 GiB；关掉后从第一块起稳定在 3.3 GiB，单块耗时没有变化。
 - **不要安装 `demucs-onnx[export]`**：会拉 `torch>=2.4,<2.5` + `demucs==4.0.1`，与"无 PyTorch"目标直接冲突。输出 WAV 也不需要 `[mp3]`。
 - **Python 锁定 3.11**（`requires-python = ">=3.11,<3.12"`）：`demucs-onnx` 只测到 3.13，3.14 未验证；`.python-version` 固定 3.11。
 - **`.agent/` 不能被 gitignore**：`.agent/memory/` 是本项目的记忆目录（索引 `MEMORY.md`），要跟着仓库走。

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import { api } from '@/api/client'
 import { fmtBytes, fmtClock } from '@/api/format'
 import { STEM_LABELS, type Job } from '@/api/types'
 
@@ -91,7 +92,7 @@ function barWidth(job: Job): string {
 }
 
 function download(id: string): void {
-  window.location.href = `/api/jobs/${id}/download`
+  window.location.href = api.downloadZip(id)
 }
 </script>
 

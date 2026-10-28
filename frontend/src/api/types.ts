@@ -38,6 +38,8 @@ export interface ModelTier {
   eta: string
   detail: string
   cached: boolean
+  /** False for single-stem tiers and single-file models: concurrency is a no-op. */
+  parallelizable: boolean
 }
 
 export interface Health {
@@ -57,6 +59,8 @@ export interface Health {
   max_duration_sec: number
   default_parallel: number
   max_parallel: number
+  /** Provider options passed to CUDA sessions; empty when running on CPU. */
+  cuda_options?: Record<string, string>
 }
 
 export interface JobCreateResponse {

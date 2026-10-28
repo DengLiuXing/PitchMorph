@@ -32,6 +32,16 @@ const ffmpegSource = computed(() => {
   return map[props.health?.ffmpeg_source ?? ''] ?? ''
 })
 
+const cudaOptions = computed(() => {
+  const options = props.health?.cuda_options
+  if (!options || Object.keys(options).length === 0) return '默认（CPU 路径）'
+  // Full names on purpose: these are the knobs that decide whether a session
+  // fits in VRAM, and the health sheet is where you go to confirm they applied.
+  return Object.entries(options)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(' · ')
+})
+
 const rows = computed(() => {
   const data = props.health
   if (!data) return []
@@ -42,6 +52,7 @@ const rows = computed(() => {
     ['GPU 状态', gpu],
     ['可用执行器', (data.available_providers || []).join(', ')],
     ['当前执行器', (data.active_providers || []).join(', ')],
+    ['GPU 选项', cudaOptions.value],
     ['并行度', `${data.default_parallel ?? 1} / 上限 ${data.max_parallel ?? 4}`],
     ['ffmpeg', data.ffmpeg_version ? `${data.ffmpeg_version} ${ffmpegSource.value}` : '不可用'],
     ['权重目录', data.model_dir],

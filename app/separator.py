@@ -1,26 +1,21 @@
-"""Stem separation core.
+"""Stem separation: the ONNX inference loop.
 
-Wraps ``demucs-onnx`` (numpy + onnxruntime, no PyTorch, no ffmpeg) and keeps
-every ONNX detail out of the web layer.
+Scope is deliberately narrow — this module only turns an already-normalized
+44.1 kHz WAV into stem WAVs. Decoding lives in :mod:`app.media`, weight
+download and cache-path resolution in :mod:`app.weights`, shared exception types
+in :mod:`app.errors`.
 
-We drive the ONNX sessions ourselves instead of calling
-``demucs_onnx.separate()``: that helper hides the chunk loop, and with it the
-only place cancellation and real progress can be threaded through. Its chunking
-math is reproduced here verbatim (quarter-segment overlap-add, triangular
-window), so the output is the same audio — ``scripts/smoke_offline.py`` keeps an
-eye on that.
-
-Decoding order is deliberate: ``soundfile`` (libsndfile) first, ``ffmpeg`` only
-as a fallback for containers libsndfile cannot open (m4a/aac/wma). ffmpeg is
-optional — if it is missing those formats are refused instead of the app
-failing to boot.
+We drive the sessions ourselves instead of calling ``demucs_onnx.separate()``:
+that helper hides the chunk loop, and with it the only place cancellation and
+real progress can be threaded through. Its chunking math is reproduced here
+verbatim (quarter-segment overlap-add, triangular window), so the output is the
+same audio — ``scripts/smoke_offline.py`` guards the plumbing and the docstring
+of :func:`_chunked_infer` explains how to re-verify parity against upstream.
 """
 
 from __future__ import annotations
 
 import logging
-import re
-import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -29,10 +24,9 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-import soxr
 
-from . import config, runtime
-from .weights import missing_files, required_files, weights_cached
+from . import config, runtime, weights
+from .errors import Canceled, SeparationError, friendly_error
 
 log = logging.getLogger("pitchmorph.separator")
 
@@ -41,222 +35,6 @@ StageCallback = Callable[[str, str | None, int, int], None]
 #: Overall job progress in 0..1, valid during downloading and separating.
 ProgressCallback = Callable[[float], None]
 CancelCheck = Callable[[], bool]
-
-#: Stem order baked into the htdemucs graphs.
-SOURCES: tuple[str, ...] = ("drums", "bass", "other", "vocals")
-
-
-class SeparationError(RuntimeError):
-    """Base error surfaced to the UI as ``job.error``."""
-
-
-class UnsupportedFormat(SeparationError):
-    pass
-
-
-class Canceled(SeparationError):
-    pass
-
-
-# ---------------------------------------------------------------------------
-# Model weights
-# ---------------------------------------------------------------------------
-
-
-def _cache_bytes() -> int:
-    """Total size of the weight cache. Used to estimate download progress."""
-    if not config.MODEL_DIR.exists():
-        return 0
-    total = 0
-    for path in config.MODEL_DIR.rglob("*"):
-        try:
-            if path.is_file():
-                total += path.stat().st_size
-        except OSError:
-            continue
-    return total
-
-
-def ensure_weights(
-    model: str,
-    stems: Sequence[str],
-    *,
-    on_progress: ProgressCallback | None = None,
-    should_cancel: CancelCheck | None = None,
-) -> None:
-    """Download any missing ONNX weights, cancellably.
-
-    ``demucs-onnx`` downloads inside :func:`separate`, which gives no progress
-    hook and cannot be interrupted. Fetching here means we can report real bytes
-    and abandon the transfer the moment the user hits cancel (the daemon thread
-    keeps filling the cache, which is harmless).
-    """
-    pending = missing_files(model, stems)
-    if not pending:
-        return
-
-    expected = max(1, len(pending) * config.WEIGHT_FILE_MB * 1024 * 1024)
-    baseline = _cache_bytes()
-    errors: list[BaseException] = []
-
-    def fetch() -> None:
-        from huggingface_hub import hf_hub_download
-
-        try:
-            for _, repo_id, filename in pending:
-                hf_hub_download(
-                    repo_id=repo_id,
-                    filename=filename,
-                    cache_dir=str(config.MODEL_DIR),
-                )
-        except BaseException as exc:  # surfaced on the worker thread below
-            errors.append(exc)
-
-    worker = threading.Thread(target=fetch, name="weights-download", daemon=True)
-    worker.start()
-    while worker.is_alive():
-        if should_cancel and should_cancel():
-            log.info("download abandoned after cancel request")
-            raise Canceled("任务已取消")
-        if on_progress:
-            on_progress(min(0.99, max(0.0, (_cache_bytes() - baseline) / expected)))
-        worker.join(0.6)
-
-    if errors:
-        raise SeparationError(friendly_error(errors[0]))
-    if on_progress:
-        on_progress(1.0)
-
-
-def _resolve_paths(model: str, stems: Sequence[str]) -> dict[str, Path]:
-    """Local ONNX paths for ``model``, keyed by the label used in the plan."""
-    from huggingface_hub import hf_hub_download
-
-    return {
-        label: Path(
-            hf_hub_download(
-                repo_id=repo_id,
-                filename=filename,
-                cache_dir=str(config.MODEL_DIR),
-                local_files_only=True,
-            ),
-        )
-        for label, repo_id, filename in required_files(model, stems)
-    }
-
-
-def _model_sources(model: str) -> tuple[str, ...]:
-    from demucs_onnx import list_models
-
-    return tuple(list_models()[model]["sources"].split(","))
-
-
-# ---------------------------------------------------------------------------
-# Decoding
-# ---------------------------------------------------------------------------
-
-
-_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)")
-_AUDIO_STREAM_RE = re.compile(r"Stream #\d+:\d+.*?: Audio:")
-
-
-def probe_with_ffmpeg(src: Path) -> tuple[float | None, bool]:
-    """Demux-only probe returning ``(duration_sec, has_audio_stream)``.
-
-    ``ffmpeg -i`` with no output prints the container summary to stderr and
-    exits non-zero, which is exactly what we want: a few milliseconds of work
-    instead of transcoding a 40-minute video before rejecting it.
-    """
-    ffmpeg = config.find_ffmpeg()
-    if not ffmpeg:
-        return None, True  # cannot probe; let the decoder have its say
-
-    proc = subprocess.run(
-        [ffmpeg, "-hide_banner", "-nostdin", "-i", str(src)],
-        capture_output=True,
-        check=False,
-    )
-    stderr = (proc.stderr or b"").decode("utf-8", "replace")
-
-    duration: float | None = None
-    match = _DURATION_RE.search(stderr)
-    if match:
-        duration = int(match[1]) * 3600 + int(match[2]) * 60 + float(match[3])
-    return duration, bool(_AUDIO_STREAM_RE.search(stderr))
-
-
-def _ffmpeg_error(exc: subprocess.CalledProcessError) -> str:
-    """Turn ffmpeg's stderr into something a user can act on."""
-    stderr = (exc.stderr or b"").decode("utf-8", "replace")
-    lowered = stderr.lower()
-    if "matches no streams" in lowered or "does not contain any stream" in lowered:
-        return "该文件里没有音频轨（视频与音频分开缓存时，请选音频那一段）"
-    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-    return f"ffmpeg 无法解码该文件：{lines[-1] if lines else 'unknown error'}"
-
-
-def decode_to_wav(src: Path, dst: Path) -> float:
-    """Decode ``src`` into a 44.1 kHz stereo PCM-16 WAV at ``dst``.
-
-    Returns the duration in seconds. Raises :class:`UnsupportedFormat` when
-    neither libsndfile nor ffmpeg can read the file.
-    """
-    audio: np.ndarray | None = None
-    rate = 0
-
-    try:
-        data, rate = sf.read(str(src), dtype="float32", always_2d=True)
-        audio = data.T
-    except Exception as libsndfile_error:
-        ffmpeg = config.find_ffmpeg()
-        if not ffmpeg:
-            raise UnsupportedFormat(
-                f"无法解码 {src.suffix or '该文件'}：本机未安装 ffmpeg，"
-                f"目前仅支持 {', '.join(sorted(config.NATIVE_EXTS))}",
-            ) from libsndfile_error
-        tmp = dst.with_suffix(".transcoded.wav")
-        try:
-            subprocess.run(
-                [
-                    ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                    "-i", str(src),
-                    # Take the first audio stream only — this is what makes mp4 /
-                    # m4s / mkv / ts work without caring about the video payload.
-                    "-map", "0:a:0",
-                    "-ac", "2", "-ar", str(config.SAMPLE_RATE), "-c:a", "pcm_s16le",
-                    str(tmp),
-                ],
-                check=True,
-                capture_output=True,
-            )
-            data, rate = sf.read(str(tmp), dtype="float32", always_2d=True)
-            audio = data.T
-        except subprocess.CalledProcessError as exc:
-            raise UnsupportedFormat(_ffmpeg_error(exc)) from exc
-        finally:
-            tmp.unlink(missing_ok=True)
-
-    if audio.shape[0] == 1:
-        audio = np.tile(audio, (2, 1))
-    elif audio.shape[0] > 2:
-        audio = audio[:2]
-
-    if rate != config.SAMPLE_RATE:
-        audio = soxr.resample(audio.T, rate, config.SAMPLE_RATE, quality="HQ").T
-
-    audio = np.ascontiguousarray(audio, dtype=np.float32)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(dst), audio.T, config.SAMPLE_RATE, subtype="PCM_16")
-    return audio.shape[1] / config.SAMPLE_RATE
-
-
-def probe_duration(src: Path) -> float:
-    """Duration in seconds, or 0.0 when libsndfile cannot tell."""
-    try:
-        info = sf.info(str(src))
-    except Exception:
-        return 0.0
-    return info.frames / info.samplerate if info.samplerate else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +65,11 @@ def _chunked_infer(
     A chunk is 7.8 s of audio, so that is the real cancellation latency — not
     the length of a whole stem. ``wanted`` maps stem name to its row in the
     model output.
+
+    Parity with upstream is a hard requirement: after touching this function,
+    run the same audio through ``demucs_onnx.separate(model="htdemucs_ft_vocals")``
+    and through here, then compare the two ``vocals.wav`` sample by sample
+    (max abs diff must stay < 1e-3).
     """
     from demucs_onnx.inference import N_CHANNELS, N_SAMPLES
 
@@ -326,8 +109,20 @@ def _chunked_infer(
     return out
 
 
+def _model_sources(model: str) -> tuple[str, ...]:
+    """Stem order of a model, as reported by the catalog (never hardcoded)."""
+    from demucs_onnx import list_models
+
+    return tuple(list_models()[model]["sources"].split(","))
+
+
 def _write_stem(path: Path, audio: np.ndarray) -> None:
     sf.write(str(path), audio.T, config.SAMPLE_RATE, subtype="PCM_16")
+
+
+# ---------------------------------------------------------------------------
+# Job-level orchestration
+# ---------------------------------------------------------------------------
 
 
 def separate_stems(
@@ -342,15 +137,15 @@ def separate_stems(
 ) -> dict[str, Path]:
     """Run separation for ``tier`` and return ``{stem: path}``.
 
-    ``src_wav`` must already be 44.1 kHz stereo (see :func:`decode_to_wav`) so
-    that the emitted stems share the input's sample rate.
+    ``src_wav`` must already be 44.1 kHz stereo (see :func:`app.media.decode_to_wav`)
+    so that the emitted stems share the input's sample rate.
 
     The ``htdemucs_ft`` bag runs its specialists in batches of ``parallel`` (one
     session per stem, so it is clamped to ``len(tier.stems)``). Two constraints
     shape the batch shape: a single session already saturates the physical cores
-    (``docs/perf-audit.md``), and ``session_pool().clear()`` drops the whole
-    process-wide pool, so it may only run while no worker holds a session.
-    Peak memory is ``parallel`` sessions (~0.6 GB each) instead of all four.
+    (``docs/perf-audit.md``), and releasing sessions is process-wide, so it may
+    only run once every worker has joined — which is why the release happens
+    after the batch, never inside a worker.
     """
     from demucs_onnx import load_audio
 
@@ -368,14 +163,14 @@ def separate_stems(
 
     started_all = time.monotonic()
     try:
-        if missing_files(tier.model, tier.stems):
+        if weights.missing_files(tier.model, tier.stems):
             notify("downloading", None, 0)
-            ensure_weights(
+            weights.ensure_weights(
                 tier.model, tier.stems, on_progress=report, should_cancel=should_cancel,
             )
             check()
 
-        paths = _resolve_paths(tier.model, tier.stems)
+        paths = weights.resolve_paths(tier.model, tier.stems)
         mix, _ = load_audio(str(src_wav), target_sr=config.SAMPLE_RATE)
 
         if tier.model in config.SINGLE_FILE_MODELS:
@@ -395,6 +190,7 @@ def separate_stems(
                 _write_stem(out_dir / f"{stem}.wav", audio[stem])
             notify("separating", tier.stems[-1], total)
         else:
+            sources = _model_sources("htdemucs_ft")
             workers = max(1, min(parallel, total))
             batch_count = (total + workers - 1) // workers
             ratios: dict[str, float] = {}
@@ -421,7 +217,7 @@ def separate_stems(
                 started = time.monotonic()
                 audio = _chunked_infer(
                     session,
-                    {stem: SOURCES.index(stem)},
+                    {stem: sources.index(stem)},
                     mix,
                     on_chunk=on_chunk,
                     should_cancel=worker_cancel,
@@ -468,11 +264,19 @@ def separate_stems(
                     _write_stem(out_dir / f"{stem}.wav", audios[stem])
                     log.info("%s: %s in %.1fs", tier.model, stem, durations[stem])
                     notify("separating", stem, offset + 1)
-                    ratios[stem] = 1.0
-                progress = sum(ratios.values()) / total
-                if progress > reported:
-                    reported = progress
-                    report(progress)
+                    with lock:
+                        ratios[stem] = 1.0
+                with lock:
+                    progress = sum(ratios.values()) / total
+                    if progress > reported:
+                        reported = progress
+                report(reported)
+                # Every worker has joined, so the cache only holds this batch.
+                # Order matters: releasing only drops the cache's references, so
+                # the local dict has to go first or the session (and its ~3 GB
+                # arena) would stay alive into the next batch's session build.
+                sessions.clear()
+                _release_sessions()
     except Canceled:
         _cleanup(out_dir)
         raise
@@ -483,10 +287,9 @@ def separate_stems(
         _cleanup(out_dir)
         raise SeparationError(friendly_error(exc)) from exc
     finally:
-        # Runs on success, cancel and failure alike: trimming only when the
-        # pool outgrew its cap keeps the bag warm across jobs without letting
-        # a future 6-stem model grow the process without bound.
-        _trim_sessions()
+        # Runs on success, cancel and failure alike so an aborted job cannot
+        # leave a session (and its VRAM) behind.
+        _release_sessions()
 
     log.info("job separation finished in %.1fs", time.monotonic() - started_all)
 
@@ -498,49 +301,25 @@ def separate_stems(
     return produced
 
 
-def _trim_sessions() -> None:
-    """Drop cached sessions only when the pool outgrew its cap.
+def _release_sessions() -> None:
+    """Drop every cached session so its VRAM (and arena) is returned.
 
-    Clearing after every job would re-pay the ~4 s load per specialist on CPU
-    and a full graph compile per specialist on CUDA — the exact cost the
-    resident pool exists to avoid. The cap leaves headroom for future models.
+    Retention was the original design — it saved a rebuild per specialist. On
+    CUDA that trade is wrong: a session whose arena has grown holds ~3 GB, so a
+    four-stem batch would need ~12 GB. A rebuild costs ~4 s, which is the price
+    of not running out of memory on an 8 GB card.
+
+    The cache lives in :mod:`app.runtime` because that is the only layer that
+    can pass CUDA provider options — ``demucs_onnx.SessionPool`` keys on
+    provider names, so its sessions are stuck with ORT's defaults.
     """
     try:
-        from demucs_onnx import session_pool
-
-        pool = session_pool()
-        if len(pool) > config.MAX_RESIDENT_SESSIONS:
-            log.info(
-                "session pool trimmed (%d > %d)",
-                len(pool),
-                config.MAX_RESIDENT_SESSIONS,
-            )
-            pool.clear()
+        runtime.release_sessions()
     except Exception:  # cleanup must never fail an already-finished job
-        log.debug("session trim skipped", exc_info=True)
+        log.debug("session release skipped", exc_info=True)
 
 
 def _cleanup(out_dir: Path) -> None:
     """Remove half-written stems after a failure or cancellation."""
     for path in out_dir.glob("*.wav"):
         path.unlink(missing_ok=True)
-
-
-def friendly_error(exc: Exception) -> str:
-    """Turn ORT / Hub exceptions into something a user can act on."""
-    message = str(exc) or exc.__class__.__name__
-    lowered = message.lower()
-    if "no such file" in lowered or "not found" in lowered:
-        if "huggingface" in lowered or "hub" in lowered or "repository" in lowered:
-            return (
-                "下载模型权重失败。国内网络可设置环境变量 "
-                "HF_ENDPOINT=https://hf-mirror.com 后重试。"
-            )
-    if "could not download" in lowered or "connection" in lowered or "timed out" in lowered:
-        return (
-            "下载模型权重超时。可设置 HF_ENDPOINT=https://hf-mirror.com 后重试，"
-            f"或手动把权重放到 {config.MODEL_DIR}"
-        )
-    if "provider" in lowered and "not in available providers" in lowered:
-        return f"ONNX Runtime 执行器不可用：{message}"
-    return message

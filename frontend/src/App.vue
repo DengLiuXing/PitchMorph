@@ -6,6 +6,7 @@ import type { Health, Job, ModelTier } from '@/api/types'
 import AppHeader from '@/components/AppHeader.vue'
 import DropZone from '@/components/DropZone.vue'
 import HealthDialog from '@/components/HealthDialog.vue'
+import ParallelPicker from '@/components/ParallelPicker.vue'
 import TaskBoard from '@/components/TaskBoard.vue'
 import TierPicker from '@/components/TierPicker.vue'
 import Workbench from '@/components/Workbench.vue'
@@ -16,10 +17,14 @@ const ACTIVE = new Set(['queued', 'downloading', 'loading', 'separating'])
 const health = ref<Health | null>(null)
 const tiers = ref<ModelTier[]>([])
 const tier = ref<string | null>(null)
+//: Experimental: more than one specialist at a time costs VRAM linearly.
+const parallel = ref(1)
 const jobs = ref<Job[]>([])
 const view = ref<'home' | 'workbench'>('home')
 const openId = ref<string | null>(null)
 const uploadError = ref<string | null>(null)
+const envError = ref<string | null>(null)
+const jobsError = ref<string | null>(null)
 const uploading = ref(false)
 const healthOpen = ref(false)
 
@@ -28,6 +33,18 @@ let timer: number | undefined
 const hasActive = computed(() => jobs.value.some((job) => ACTIVE.has(job.stage)))
 const openJob = computed(() => jobs.value.find((job) => job.id === openId.value) ?? null)
 const gpuMode = computed(() => Boolean(health.value?.gpu_ready))
+const activeTier = computed(() => tiers.value.find((item) => item.key === tier.value) ?? null)
+const parallelizable = computed(() => Boolean(activeTier.value?.parallelizable))
+const maxParallel = computed(() => Math.max(1, Math.min(health.value?.max_parallel ?? 4, 4)))
+const parallelReason = computed(() => {
+  const item = activeTier.value
+  if (!item) return '先选择分离档位'
+  // Both cases end up with exactly one ONNX session, so there is nothing to run
+  // in parallel — the distinction is only in why, and that is what the UI says.
+  return item.stems.length <= 1
+    ? '仅人声档只有 1 个专家，没有可并行的对象。要并发请切到「四轨 · 质量优先」。'
+    : '快速档是单文件模型，一次推理就出全部四轨，没有可并行的专家。要并发请切到「四轨 · 质量优先」。'
+})
 
 const weightsLabel = computed(() => {
   if (!tiers.value.length) return '权重检测中'
@@ -61,8 +78,12 @@ function tierLabel(key: string): string {
 async function loadHealth(): Promise<void> {
   try {
     health.value = await api.health()
-  } catch {
-    /* the health chip simply stays blank */
+    // Seed from the server default so PITCHMORPH_PARALLEL still shows up in the
+    // control instead of being silently overridden by the client.
+    const ceiling = Math.max(1, Math.min(health.value.max_parallel ?? 4, 4))
+    parallel.value = Math.max(1, Math.min(health.value.default_parallel ?? 1, ceiling))
+  } catch (error) {
+    envError.value = `读取运行环境失败：${(error as Error).message}`
   }
 }
 
@@ -70,16 +91,19 @@ async function loadModels(): Promise<void> {
   try {
     tiers.value = await api.models()
     if (!tier.value) tier.value = tiers.value[0]?.key ?? null
-  } catch {
-    /* the drop zone still works with the server default tier */
+  } catch (error) {
+    envError.value = `读取档位列表失败：${(error as Error).message}`
   }
 }
 
 async function loadJobs(): Promise<void> {
   try {
     jobs.value = await api.jobs()
-  } catch {
-    /* transient failure: keep the previous snapshot */
+    jobsError.value = null
+  } catch (error) {
+    // Keep the previous snapshot on screen, but say so — a silent failure looks
+    // like a frozen UI once polling is the only thing still running.
+    jobsError.value = `刷新任务列表失败：${(error as Error).message}`
   }
 }
 
@@ -109,11 +133,14 @@ async function onFiles(files: File[]): Promise<void> {
   if (!tier.value || uploading.value) return
   uploadError.value = null
   uploading.value = true
+  // Only tiers that actually have several specialists get the knob; sending it
+  // for the others would just be noise the server clamps away.
+  const workers = parallelizable.value ? parallel.value : undefined
   try {
     // Serial on purpose: the server queues jobs anyway, and a concurrent
     // burst would only race the 429 guard.
     for (const file of files) {
-      await api.createJob(file, tier.value, 1)
+      await api.createJob(file, tier.value, workers)
     }
     await loadJobs()
     startPoll()
@@ -165,6 +192,8 @@ function backToHome(): void {
 
 function selectTier(key: string): void {
   tier.value = key
+  const picked = tiers.value.find((item) => item.key === key)
+  if (!picked?.parallelizable) parallel.value = 1
 }
 
 onMounted(async () => {
@@ -201,6 +230,16 @@ onBeforeUnmount(stopPoll)
           :tier="tier"
           @select-tier="selectTier"
         />
+
+        <ParallelPicker
+          v-model="parallel"
+          :max="maxParallel"
+          :available="parallelizable"
+          :reason="parallelReason"
+        />
+
+        <p v-if="envError" class="error-line" role="alert">{{ envError }}</p>
+        <p v-if="jobsError" class="error-line" role="alert">{{ jobsError }}</p>
 
         <div class="taskboard">
           <TaskBoard

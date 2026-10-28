@@ -12,11 +12,20 @@ once this finishes the web UI starts instantly and never touches the network.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
+from pathlib import Path
 
 from . import config
+from .errors import Canceled, SeparationError, friendly_error
+
+log = logging.getLogger("pitchmorph.weights")
+
+ProgressCallback = Callable[[float], None]
+CancelCheck = Callable[[], bool]
 
 
 def _remote(alias: str) -> tuple[str, str]:
@@ -56,6 +65,88 @@ def weights_cached(model: str, stems: Sequence[str]) -> bool:
         return not missing_files(model, stems)
     except Exception:  # catalog lookup is best effort; assume not cached
         return False
+
+
+def resolve_paths(model: str, stems: Sequence[str]) -> dict[str, Path]:
+    """Local ONNX paths for ``model``, keyed by stem (or by model for single-file)."""
+    from huggingface_hub import hf_hub_download
+
+    return {
+        label: Path(
+            hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                cache_dir=str(config.MODEL_DIR),
+                local_files_only=True,
+            ),
+        )
+        for label, repo_id, filename in required_files(model, stems)
+    }
+
+
+def _cache_bytes() -> int:
+    """Total size of the weight cache. Used to estimate download progress."""
+    if not config.MODEL_DIR.exists():
+        return 0
+    total = 0
+    for path in config.MODEL_DIR.rglob("*"):
+        try:
+            if path.is_file():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def ensure_weights(
+    model: str,
+    stems: Sequence[str],
+    *,
+    on_progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
+) -> None:
+    """Download any missing ONNX weights, cancellably.
+
+    ``demucs-onnx`` downloads inside ``separate()``, which gives no progress hook
+    and cannot be interrupted. Fetching here means we can report real bytes and
+    abandon the transfer the moment the user hits cancel (the daemon thread
+    keeps filling the cache, which is harmless).
+    """
+    pending = missing_files(model, stems)
+    if not pending:
+        return
+
+    expected = max(1, len(pending) * config.WEIGHT_FILE_MB * 1024 * 1024)
+    baseline = _cache_bytes()
+    errors: list[BaseException] = []
+
+    def fetch() -> None:
+        from huggingface_hub import hf_hub_download
+
+        try:
+            for _, repo_id, filename in pending:
+                hf_hub_download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    cache_dir=str(config.MODEL_DIR),
+                )
+        except BaseException as exc:  # surfaced on the worker thread below
+            errors.append(exc)
+
+    worker = threading.Thread(target=fetch, name="weights-download", daemon=True)
+    worker.start()
+    while worker.is_alive():
+        if should_cancel and should_cancel():
+            log.info("download abandoned after cancel request")
+            raise Canceled("任务已取消")
+        if on_progress:
+            on_progress(min(0.99, max(0.0, (_cache_bytes() - baseline) / expected)))
+        worker.join(0.6)
+
+    if errors:
+        raise SeparationError(friendly_error(errors[0]))
+    if on_progress:
+        on_progress(1.0)
 
 
 def files_for(tier: config.ModelTier) -> list[tuple[str, str, str]]:
@@ -135,9 +226,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    from . import separator
-
-    print("全部完成，权重自检通过。" if all(separator.weights_cached(t.model, t.stems) for t in tiers) else "下载结束，但自检未通过，请检查上方的错误输出。")
+    ok = all(weights_cached(tier.model, tier.stems) for tier in tiers)
+    print("全部完成，权重自检通过。" if ok else "下载结束，但自检未通过，请检查上方的错误输出。")
     return 0
 
 

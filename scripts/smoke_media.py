@@ -16,7 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import config, separator  # noqa: E402
+from app import config, media  # noqa: E402
+from app.errors import UnsupportedFormat  # noqa: E402
 
 
 def make(ffmpeg: str, out: Path, *args: str) -> Path:
@@ -71,13 +72,13 @@ def main() -> int:
     failures = 0
 
     for name, path in fixtures.items():
-        duration, has_audio = separator.probe_with_ffmpeg(path)
+        duration, has_audio = media.probe_with_ffmpeg(path)
         accepted = config.can_accept(path.suffix)
         print(f"\n{name:12} probe: {duration and round(duration, 1)}s audio={has_audio} accept={accepted}")
 
         try:
-            decoded = separator.decode_to_wav(path, work / f"{name}.wav")
-        except separator.UnsupportedFormat as exc:
+            decoded = media.decode_to_wav(path, work / f"{name}.wav")
+        except UnsupportedFormat as exc:
             expected = name == "silent.mp4"
             print(f"  decode → UnsupportedFormat: {exc}")
             if not expected:
@@ -89,7 +90,7 @@ def main() -> int:
             failures += 1
             print("  expected this to be rejected (no audio stream)")
 
-    long_duration, _ = separator.probe_with_ffmpeg(fixtures["long.m4a"])
+    long_duration, _ = media.probe_with_ffmpeg(fixtures["long.m4a"])
     too_long = bool(long_duration and long_duration > config.MAX_DURATION_SEC)
     print(f"\nlong.m4a: {long_duration:.0f}s exceeds limit={too_long}")
     if not too_long:

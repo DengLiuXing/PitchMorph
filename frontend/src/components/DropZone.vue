@@ -31,9 +31,10 @@ function onDrop(event: DragEvent): void {
   <div class="compose">
     <div
       class="dropzone"
-      :class="{ 'is-dragging': dragging, 'is-busy': busy }"
+      :class="{ 'is-drag': dragging, 'is-busy': busy }"
       tabindex="0"
       role="button"
+      :aria-busy="busy"
       aria-label="选择或拖入音频文件"
       @click="input?.click()"
       @keydown.enter.prevent="input?.click()"

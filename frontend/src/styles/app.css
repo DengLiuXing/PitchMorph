@@ -78,6 +78,10 @@ body {
   margin: 0 auto;
   padding: 22px 24px 28px;
   display: grid;
+  /* minmax(0, 1fr), not the implicit `auto`: an auto track takes its minimum
+     from the content's min-content width, so one long unbreakable filename in
+     the task list would widen the whole column past max-width. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr auto;
   gap: 20px;
 }
@@ -130,6 +134,9 @@ body {
 .chip[data-tone="amber"] { color: var(--amber-soft); border-color: var(--amber-line); }
 .chip[data-tone="teal"] { color: var(--teal); border-color: rgba(45, 212, 191, 0.28); }
 
+/* GPU mode reads as "ready", CPU fallback stays neutral. */
+.chip.chip-gpu { color: var(--teal); border-color: rgba(45, 212, 191, 0.35); background: rgba(45, 212, 191, 0.09); }
+
 .icon-btn {
   width: 32px; height: 32px;
   display: grid; place-items: center;
@@ -158,6 +165,7 @@ body {
   backdrop-filter: blur(12px);
   padding: 24px;
   min-height: 460px;
+  min-width: 0;
 }
 
 .view { display: none; }
@@ -197,6 +205,18 @@ body {
 }
 
 .dropzone.is-drag { box-shadow: inset 0 0 90px rgba(242, 169, 59, 0.14); }
+
+/* Uploading: the whole zone goes quiet and stops accepting another drop. */
+.dropzone.is-busy {
+  cursor: progress;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.dropzone.is-busy .drop-scan {
+  opacity: 1;
+  animation: scan 1.4s linear infinite;
+}
 
 .drop-inner { text-align: center; padding: 24px; position: relative; z-index: 1; }
 
@@ -249,16 +269,7 @@ body {
   100% { transform: translateY(300px); }
 }
 
-/* ── param bar ──────────────────────────────────────────────── */
-
-.param-bar {
-  margin-top: 18px;
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  justify-content: space-between;
-  flex-wrap: wrap;
-}
+/* ── tier picker ────────────────────────────────────────────── */
 
 .segmented {
   display: flex;
@@ -299,35 +310,57 @@ body {
 
 .seg[data-cached="true"] .seg-meta::after { content: " · 已缓存"; color: var(--teal); }
 
-/* ── parallel picker ─────────────────────────────────────────── */
+/* ── parallel picker ────────────────────────────────────────── */
 
-.parallel { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
-
-.parallel-label {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
-  color: var(--text-3);
+.parallel-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 0 2px;
 }
 
-.parallel-seg { flex: 0 0 auto; gap: 2px; padding: 3px; }
+.parallel-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.parallel-title em {
+  font-style: normal;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: var(--amber-soft);
+  border: 1px solid var(--amber-line);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.parallel-seg { flex: 0 0 auto; }
 
 .parallel-seg .seg {
   flex: 0 0 auto;
-  min-width: 30px;
-  padding: 8px 0;
+  min-width: 36px;
+  padding: 6px 0;
   text-align: center;
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .parallel-seg .seg:disabled { opacity: 0.35; cursor: not-allowed; }
 
-.parallel-seg .seg:disabled:hover { background: transparent; color: var(--text-2); }
+.parallel-note {
+  flex: 1 1 320px;
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.6;
+}
 
-.param-actions { display: flex; align-items: center; gap: 14px; }
-
-.param-hint { margin: 0; font-size: 11.5px; color: var(--text-3); max-width: 260px; }
+.parallel-note[data-risk="true"] { color: var(--amber-soft); }
 
 /* ── buttons ────────────────────────────────────────────────── */
 

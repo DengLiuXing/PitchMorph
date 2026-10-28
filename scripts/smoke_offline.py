@@ -20,10 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import demucs_onnx  # noqa: E402
 
-from app import config, separator  # noqa: E402
+from app import config, errors, runtime, separator, weights  # noqa: E402
 
 CALLS: list[tuple[str, tuple[str, ...]]] = []
 PROGRESS: list[float] = []
+RELEASES: list[int] = []
 CANCEL_AFTER: dict[str, int] = {"infer": 0, "n": 0}
 LOCK = threading.Lock()
 
@@ -32,13 +33,14 @@ def fake_load_audio(path, target_sr=44100):
     return np.zeros((2, 4410), "float32"), 44100
 
 
-class FakePool:
-    def get(self, path, providers):
-        CALLS.append(("session", (str(path),)))
-        return object()
+def fake_ensure_session(path):
+    CALLS.append(("session", (str(path),)))
+    return object()
 
-    def clear(self):
-        return None
+
+def fake_release():
+    """Count releases. The real one clears runtime's session cache and VRAM."""
+    RELEASES.append(1)
 
 
 def fake_infer(session, wanted, mix, *, on_chunk=None, should_cancel=None):
@@ -48,9 +50,9 @@ def fake_infer(session, wanted, mix, *, on_chunk=None, should_cancel=None):
         nth = CANCEL_AFTER["n"]
         limit = CANCEL_AFTER["infer"]
     if limit and nth > limit:
-        raise separator.Canceled("任务已取消")
+        raise errors.Canceled("任务已取消")
     if should_cancel and should_cancel():
-        raise separator.Canceled("任务已取消")
+        raise errors.Canceled("任务已取消")
     CALLS.append(("infer", tuple(wanted)))
     if on_chunk:
         for step in range(4):
@@ -59,11 +61,12 @@ def fake_infer(session, wanted, mix, *, on_chunk=None, should_cancel=None):
 
 
 demucs_onnx.load_audio = fake_load_audio
-demucs_onnx.session_pool = lambda: FakePool()
-separator.missing_files = lambda model, stems: []
-separator._resolve_paths = lambda model, stems: {  # noqa: SLF001
+runtime.ensure_session = fake_ensure_session
+runtime.release_sessions = fake_release
+weights.missing_files = lambda model, stems: []
+weights.resolve_paths = lambda model, stems: {
     label: Path(f"{label}.onnx")
-    for label, _repo, _file in separator.required_files(model, stems)
+    for label, _repo, _file in weights.required_files(model, stems)
 }
 separator._chunked_infer = fake_infer  # noqa: SLF001
 
@@ -77,6 +80,7 @@ def run(
 ) -> dict[str, Path]:
     CALLS.clear()
     PROGRESS.clear()
+    RELEASES.clear()
     CANCEL_AFTER["n"] = 0
     return separator.separate_stems(
         out / "input.wav",
@@ -99,6 +103,10 @@ def main() -> int:
     ], CALLS
     assert PROGRESS == sorted(PROGRESS), "progress must be monotonic"
     assert PROGRESS[-1] == 1.0, PROGRESS
+    # One release per batch, plus the unconditional one in the finally block:
+    # four batches with parallel=1, so 4 + 1. Getting this wrong is how VRAM
+    # ends up held across batches on CUDA.
+    assert len(RELEASES) == 5, f"quality parallel=1 should release 4+1 times: {RELEASES}"
     print(f"quality  ok: 4 files, 4 specialist passes, {len(PROGRESS)} progress ticks")
 
     par = run("quality", tmp, parallel=2, suffix="-p2")
@@ -110,7 +118,9 @@ def main() -> int:
     assert len([c for c in CALLS if c[0] == "session"]) == 4, CALLS
     assert PROGRESS == sorted(PROGRESS), "parallel progress must stay monotonic"
     assert PROGRESS[-1] == 1.0, PROGRESS
-    print(f"parallel ok: 2-stem batches, 4 sessions, {len(PROGRESS)} progress ticks")
+    assert len(RELEASES) == 3, f"quality parallel=2 should release 2+1 times: {RELEASES}"
+    print(f"parallel ok: 2-stem batches, 4 sessions, "
+          f"{len(RELEASES)} releases, {len(PROGRESS)} progress ticks")
 
     vox = run("vocals", tmp, parallel=4, suffix="-v4")
     assert sorted(vox) == ["vocals"], vox
@@ -127,7 +137,7 @@ def main() -> int:
     CANCEL_AFTER["infer"] = 2
     try:
         run("quality", tmp, suffix="-cancel")
-    except separator.Canceled:
+    except errors.Canceled:
         leftover = list((tmp / "quality-cancel").glob("*.wav"))
         assert not leftover, leftover
         print("cancel   ok: aborted mid-run, partial files removed")
