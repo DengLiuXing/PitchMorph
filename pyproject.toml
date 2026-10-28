@@ -15,14 +15,15 @@ dependencies = [
     # keeps the start command identical everywhere: `uv run uvicorn ...`, no
     # flags, no second install step.
     "onnxruntime-gpu>=1.31.1; sys_platform != 'darwin'",
-    # cuDNN is the one CUDA library with a win_amd64 wheel. The rest of the
-    # runtime (cudart/cublas/cufft/curand/nvrtc) is manylinux-only, so on
-    # Windows it comes from a system CUDA Toolkit install instead.
+    # cuDNN ships a win_amd64 wheel and can come from pip. The CUDA runtime
+    # libraries are the awkward part: `cudart` / `cufft` / `curand` did not come
+    # down the pip route here, so Windows still uses a system CUDA Toolkit for
+    # all five. See docs/00-replication.md §5.2 before changing this.
     "nvidia-cudnn-cu13>=9.0; sys_platform == 'win32'",
-    # cuDNN pulls these two, and their newest PyPI builds are manylinux-only —
-    # `nvidia-cublas` stops shipping win_amd64 at 13.8.0.4, `nvidia-cuda-nvrtc`
-    # at 13.4.92. Unpinned, uv resolves to the Linux-only build and the whole
-    # resolve fails on Windows. Bump these when NVIDIA publishes newer wheels.
+    # cuDNN pulls these two, and later PyPI builds dropped win_amd64 —
+    # 13.8.0.4 / 13.4.92 are the last versions that ship a Windows wheel.
+    # Unpinned, uv resolves to the manylinux build and the whole resolve fails
+    # on Windows. Bump these when NVIDIA publishes newer wheels.
     "nvidia-cublas==13.8.0.4; sys_platform == 'win32'",
     "nvidia-cuda-nvrtc==13.4.92; sys_platform == 'win32'",
 ]

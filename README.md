@@ -212,16 +212,21 @@ samples/           # 自测素材（已 gitignore，不入库）
 .agent/memory/     # 项目记忆（随仓库走，勿 gitignore）
 ```
 
-## 后续里程碑
+## 当前状态与下一步
 
-- **M2 · 音高线提取**：对 `stems/vocals.wav` 做 f0 估计与音符切分，产出可编辑的音高曲线。实现时新增 `features/` 目录（与 `stems/` 平级），不改动现有接口。
-- **M3 · 导入 OpenUtau**：输出 `.ustx`（OpenUtau 原生工程格式，`notes` + `curves`）或配套 MIDI，让音高线直接落到工程里。
+**本项目已挂起**，功能停在「四轨分离 + 同步试听」。音高线提取与 MIDI 导出没有实现，只在 `data/jobs/{id}/features/` 上留了目录接缝。
+
+下一阶段改为 PyTorch 生态的双重心工具：**声轨分离**与**音高分析（含导出 MIDI）同等重要**。设计草案见 [docs/03-pytorch-dual.md](docs/03-pytorch-dual.md)，其中说明了为什么放弃 ONNX 路线、模型怎么选、进程模型怎么改。
 
 ## 开发文档
 
 | 文档 | 内容 |
 |---|---|
 | [AGENTS.md](AGENTS.md) | 架构、调试命令、硬约束、踩过的坑——改代码前先读 |
+| [docs/00-replication.md](docs/00-replication.md) | 复刻指南：从零到跑通的顺序与验收点 |
+| [docs/01-decisions.md](docs/01-decisions.md) | 关键决策的理由、代价，以及什么时候该推翻 |
+| [docs/02-frontend.md](docs/02-frontend.md) | 前端：波形、多轨同步播放、音高窗口 |
+| [docs/03-pytorch-dual.md](docs/03-pytorch-dual.md) | 下一阶段：PyTorch 双工具设计 |
 | [docs/perf-audit.md](docs/perf-audit.md) | 分轨耗时构成、并行与 CUDA 的实测数据与结论 |
 
 前端改动：`cd frontend && npm install && npm run build`，产物写入 `app/static`（该目录由构建清空重写，不要手改）。

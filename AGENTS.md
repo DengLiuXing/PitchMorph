@@ -8,6 +8,10 @@
 |---|---|---|
 | `README.md` | 使用者 | 安装、启动、支持的格式、限制、HTTP 接口 |
 | `AGENTS.md` | 改代码的人 | 本文件：架构、命令、硬约束、踩过的坑 |
+| `docs/00-replication.md` | 想重建同类工具的人 | 从零到跑通的顺序，每步的验收点 |
+| `docs/01-decisions.md` | 想推翻某个设计的人 | 每个关键选择的理由、代价、什么时候该重开 |
+| `docs/02-frontend.md` | 写前端的人 | 波形、多轨同步播放、音高窗口的实现模式 |
+| `docs/03-pytorch-dual.md` | 下一阶段 | PyTorch 双工具（分轨 + 音高 → MIDI）的设计草案 |
 | `docs/perf-audit.md` | 调性能的人 | 当前结论、耗时与显存实测、已否决的路线、剩余待办 |
 | `.agent/memory/` | AI 会话 | 跨会话的项目记忆，索引入口 `MEMORY.md` |
 
@@ -166,13 +170,17 @@ data/models/         # HF 权重缓存（cache 布局，别手放文件进来）
 - 执行器由 `app/runtime.py` 决定，顺序是：显式 `PITCHMORPH_PROVIDERS` → CUDA 真探针 → CPU 兜底。**不要用 `get_available_providers()` 判断 GPU 可用**——装了 GPU wheel 但没有 CUDA DLL 的机器也会列出 `CUDAExecutionProvider`，失败会推迟到建 session 时才炸。真探针是 `preload_dlls()` + 一张 92 字节的 Identity 图建 session 并试跑一次。
 - GPU 版与 CPU 版 `onnxruntime` 同模块名、不能共存。`pyproject.toml` 用 `[tool.uv] override-dependencies` 把 `demucs-onnx` 那条 `Requires-Dist: onnxruntime` 改写成 `sys_platform == 'darwin'`，于是 Windows/Linux 上 `uv sync` 只装 `onnxruntime-gpu`，**不需要 `--no-install-package`，也不需要 `--no-sync` 启动**。不要退回 extra 方案：`uv run` 每次启动都会 sync，会把 GPU 包换回 CPU 包，命令行就得出特例。
 - `onnxruntime-gpu` 是**常规依赖**而不是 extra，所以没有 GPU 的机器也会装它——它自带 CPU EP，探针失败会回落，功能等价于 CPU 版。这是为「启动命令统一」付出的磁盘代价（约 160 MB，Windows 再加 cuDNN 400 MB）。
-- **Windows 的 CUDA 运行库不能靠 pip**：`nvidia-*` 只发 manylinux wheel，`nvidia-cublas` 等没有 win_amd64，所以 `cudart` / `cublas` / `cufft` / `curand` / `nvrtc` 必须来自系统 CUDA Toolkit（13.x 均可，minor 版本兼容）。**这五个在安装器里是分开的组件——只装 Runtime 会缺 CuBLAS/CuFFT/CuRAND/NVRTC**，ORT 起不来。`nvidia-cudnn-cu13` 是唯一有 win_amd64 wheel 的，由 `uv sync` 装、`preload_dlls(cudnn=True)` 加载。
+- **Windows 上的 CUDA 运行库：pip 能给一部分，但不齐**。本项目实际由 pip 装的是 `nvidia-cublas 13.8.0.4`、`nvidia-cuda-nvrtc 13.4.92`、`nvidia-cudnn-cu13 9.27`；`cudart` / `cufft` / `curand` 当时没拿到，所以最终由系统 CUDA Toolkit 提供全部五个。**这五个在安装器里是分开的组件——只装 Runtime 会缺 CuBLAS/CuFFT/CuRAND/NVRTC**，ORT 起不来。
+  - 「pip 装 CUDA」有两种含义，别混：PyTorch 的 wheel **自带** `cudart`/`cublas`/`cudnn`（在 `torch/lib/`，所以包体 2+ GB），`pip install torch` 之后能直接跑；`onnxruntime-gpu` 的 wheel 只有 ~160 MB，**不带**这些，靠运行时加载系统库。二者不可类比。
+  - 想重走纯 pip 路线要三件事同时成立：CUDA 13 的包名去掉了 `-cu13` 后缀（`nvidia-cuda-runtime` / `nvidia-cufft` / `nvidia-curand`）；pin 到仍发 `win_amd64` 的版本（最新的会解析到 manylinux，整个 resolve 在 Windows 上失败）；在 `runtime._register_windows_dll_dirs()` 里注册 `site-packages/nvidia/*/bin`，否则 ORT 找不到。这条路未验证过。
 - **CUDA 13 的 DLL 在 `bin\x64`**，不是 `bin`。`app/runtime.py` 用 `os.add_dll_directory()` 注册（Python 3.8+ 已不从 PATH 找 DLL），所以无需改系统 PATH。PhysX 自带的 `cudart64_65.dll`（CUDA 6.5）是干扰项，必须按版本匹配 `cudart64_13.dll`。
 - **探针要单独查 cuDNN**：最小 Identity 图不经过卷积，cuDNN 缺失时照样跑通，会误报「CUDA 可用」，然后真实模型在第一层 Conv 崩掉。`runtime._missing_cudnn()` 就是为此加的。
 - 前端在 `frontend/`（Vue 3 + TS + Vite），`npm run build` 输出到 `app/static` 并清空该目录。改完前端必须重新构建，把 `app/static` 的产物一起提交；`frontend/node_modules/` 已忽略。`/api` 与 `/media` 在 `npm run dev` 下代理到 8000。
 
 ## 当前范围
 
-只做分离。音高线提取（M2）与 OpenUtau 导入（M3）尚未实现，只在目录结构上留了接缝。看到任何 audio→MIDI 相关的代码或依赖都属于误加。
+**本项目已挂起**：只做分离，音高线与 MIDI 导出都没有实现，只在目录结构上留了接缝（`data/jobs/{id}/features/`）。看到任何 audio→MIDI 相关的代码或依赖都属于误加。
+
+下一阶段改为 PyTorch 生态的双重心工具（分轨 + 音高 → MIDI），设计见 [docs/03-pytorch-dual.md](docs/03-pytorch-dual.md)。想复刻现有实现从 [docs/00-replication.md](docs/00-replication.md) 开始。
 
 性能档案（分轨为什么慢、GPU 收益、显存取舍、已否决的路线）与剩余待办见 [docs/perf-audit.md](docs/perf-audit.md)。
