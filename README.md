@@ -4,7 +4,8 @@
 
 - 纯 ONNX Runtime 推理，**不安装 PyTorch**
 - 视频 / 容器解码用**内置 ffmpeg**，无需单独安装
-- 音频不出本机；单进程、无 Redis / Celery、前端免构建
+- 音频不出本机；单进程、无 Redis / Celery
+- 前端 Vue 3 + TS + Vite，构建产物已入库（`app/static`），跑服务不需要 Node
 
 > 本期只做分离。音高线提取与 OpenUtau 导入在后续里程碑（见文末）。
 
@@ -186,6 +187,10 @@ scripts/
 data/
 ├── jobs/<id>/     # input.wav、stems/*.wav、package.zip
 └── models/        # ONNX 权重缓存
+docs/
+└── perf-audit.md  # 分轨耗时构成、并行与 CUDA 的实测档案
+samples/           # 自测素材（已 gitignore，不入库）
+.agent/memory/     # 项目记忆（随仓库走，勿 gitignore）
 ```
 
 ## 后续里程碑
@@ -195,4 +200,9 @@ data/
 
 ## 开发文档
 
-架构细节、为什么绕开 `demucs_onnx.separate()`、调试命令和踩过的坑，见 [AGENTS.md](AGENTS.md)。
+| 文档 | 内容 |
+|---|---|
+| [AGENTS.md](AGENTS.md) | 架构、调试命令、硬约束、踩过的坑——改代码前先读 |
+| [docs/perf-audit.md](docs/perf-audit.md) | 分轨耗时构成、并行与 CUDA 的实测数据与结论 |
+
+前端改动：`cd frontend && npm install && npm run build`，产物写入 `app/static`（该目录由构建清空重写，不要手改）。

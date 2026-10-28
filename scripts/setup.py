@@ -1,19 +1,18 @@
-"""Probe this machine and install the right ONNX Runtime build.
+"""诊断本机能不能跑 CUDA，并（可选）执行一次 uv sync。
 
-    uv run python scripts/setup.py            # probe only, print the plan
-    uv run python scripts/setup.py --apply    # probe and install
-    uv run python scripts/setup.py --apply --gpu   # force the CUDA build
-    uv run python scripts/setup.py --apply --cpu   # force the CPU build
+    uv run python scripts/setup.py            # 只诊断，打印结论与建议
+    uv run python scripts/setup.py --apply    # 诊断后跑一遍 uv sync
 
-Why this exists: ``demucs-onnx`` depends on the CPU ``onnxruntime`` wheel, and
-pip/uv cannot express "replace it with onnxruntime-gpu" — the GPU wheel does
-not declare ``Provides-Dist: onnxruntime``. So the environment has to be
-steered by hand, and this script is the hand.
+两次探测分工不同：这里查的是**系统层**——驱动 UMD 版本、CUDA Toolkit 里的
+cudart / cublas / cufft / curand / nvrtc、cuDNN 9，这些在 Windows 上没法靠 pip
+装；`app/runtime.py` 查的是**运行层**——能不能用 CUDA EP 真建一个 session 并跑通。
+两边都会在失败时给出可读原因。
 
-The CUDA build needs CUDA 13.0 because that is what onnxruntime-gpu 1.31 is
-compiled against; the driver's UMD version is the ceiling we check against.
-The probe here is deliberately system-level — ``app.runtime`` probes for real
-at startup, once the wheels are actually installed.
+onnxruntime-gpu 现在是 pyproject 的常规依赖，`onnxruntime` 那条被
+`[tool.uv] override-dependencies` 改写成仅 macOS 生效，所以 --apply 只跑
+`uv sync`，不再需要 --gpu / --cpu 之类的分支。
+
+CUDA 需要 13.x（onnxruntime-gpu 1.31 就是按 CUDA 13 编译的），驱动 UMD 版本是上限。
 """
 
 from __future__ import annotations

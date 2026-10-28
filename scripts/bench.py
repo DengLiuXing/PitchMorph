@@ -1,6 +1,6 @@
 """Time one separation end to end, split by stage.
 
-    uv run python scripts/bench.py assets/美丽之物.mp3
+    uv run python scripts/bench.py samples/美丽之物.mp3
     uv run python scripts/bench.py song.mp3 --tier quality --parallel 1
 
 Writes nothing into the repo: the decoded WAV and the stems land in a temp

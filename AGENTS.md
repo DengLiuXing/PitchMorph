@@ -1,12 +1,23 @@
 # AGENTS.md — PitchMorph 开发指引
 
-本地声轨分离 Web 工具：FastAPI 后端 + 免构建静态前端，把整首混音分成鼓 / 贝斯 / 其他 / 人声四轨。推理走 `demucs-onnx`（纯 ONNX Runtime，**不装 PyTorch**），容器解码走内置 ffmpeg。
+本地声轨分离 Web 工具：FastAPI 后端 + Vue 3 前端（源码 `frontend/`，构建产物入库 `app/static/`），把整首混音分成鼓 / 贝斯 / 其他 / 人声四轨。推理走 `demucs-onnx`（纯 ONNX Runtime，**不装 PyTorch**），容器解码走内置 ffmpeg。
+
+## 文档地图
+
+| 文件 | 谁看 | 内容 |
+|---|---|---|
+| `README.md` | 使用者 | 安装、启动、支持的格式、限制、HTTP 接口 |
+| `AGENTS.md` | 改代码的人 | 本文件：架构、命令、硬约束、踩过的坑 |
+| `docs/perf-audit.md` | 调性能的人 | 耗时构成、并行与 CUDA 的实测档案（按日期追加） |
+| `.agent/memory/` | AI 会话 | 跨会话的项目记忆，索引入口 `MEMORY.md` |
 
 ## 常用命令
 
 ```powershell
 uv sync                                  # 创建 3.11 环境并装依赖（含内置 ffmpeg）
 uv run uvicorn app.main:app --port 8000  # 启动；调代码时加 --reload（注意见下文）
+uv run python scripts/setup.py           # 诊断 CUDA 可用性（只读）；--apply 跑 uv sync
+uv run python scripts/bench.py samples/美丽之物.mp3   # 端到端计时，按阶段拆分
 ```
 
 回归验证（没有 pytest，这两个脚本就是测试集）：
@@ -70,10 +81,10 @@ ffmpeg 的来源由 `config.resolve_ffmpeg()` 决定，顺序是 `PITCHMORPH_FFM
 
 ### 批式并发：为什么不是一个线程池跑四个专家
 
-`separate_stems` 按 `parallel`（`PITCHMORPH_PARALLEL`，默认 1，上限 `config.MAX_PARALLEL`=4）把 stem 切批：**批内主线程预建 session → 并发跑 `_chunked_infer` → 全部 join → `session_pool().clear()` → 下一批**。三条约束决定了这个形状：
+`separate_stems` 按 `parallel`（`PITCHMORPH_PARALLEL`，默认 1，上限 `config.MAX_PARALLEL`=4）把 stem 切批：**批内主线程预建 session → 并发跑 `_chunked_infer` → 全部 join → 写盘 → 下一批**。session 池**不在每批后清空**：整个任务结束后 `finally` 里跑 `_trim_sessions()`，只有池大小超过 `MAX_RESIDENT_SESSIONS`（4）才 clear，这样跨任务能复用已加载的 158 MB 图。三条约束决定了这个形状：
 
 - `SessionPool.get()` 是**无锁**的 get-or-create，并发 miss 会 race，所以 session 只能由主线程预建。
-- `SessionPool.clear()` 清的是**整个进程级池**，并行时调用会清掉别的 worker 正在用的 session，因此只能在 join 之后、批与批之间。
+- `SessionPool.clear()` 清的是**整个进程级池**，并行时调用会清掉别的 worker 正在用的 session，所以只能在所有 worker join 之后调用——这也是它被放进 `finally` 的原因。
 - 单 session 已经吃满物理核（线程扫描：默认 1.19 s 最优，24 线程反而 1.80 s），给一个 session 加 `intra_op_num_threads` 只会更慢，只能靠多个独立 session 重叠。
 
 峰值内存**不是**"批大小 × 0.6 GB"：ORT 的 CPU arena 会随线程数膨胀。实测 `parallel=2` 处理 60 s 片段时 WorkingSet 就到约 10 GB，全曲跑到 10.2 GB 时进程被系统终止——所以默认并行度是 1，只有核数远多于 24 的机器才值得调大。`parallel` 会被 `min(parallel, len(tier.stems))` 夹住，所以单轨档位（vocals）恒为 1，前端对应控件置灰。
@@ -102,7 +113,7 @@ ffmpeg 的来源由 `config.resolve_ffmpeg()` 决定，顺序是 `PITCHMORPH_FFM
 
 列表状态来自 `GET /api/jobs`，不是前端内存，所以刷新不丢；轮询只在存在活跃任务时启动，任务完成后自己停。
 
-添加任务卡片里的「并发」控件是**提交时参数**（1–4），缺省值来自 `/api/health` 的 `default_parallel`；单轨档位没有可并行的专家，控件置灰。任务列表只在 `parallel > 1` 时显示「并发 N」。
+**并行度目前只能走环境变量**：后端 `POST /api/jobs` 接受 `parallel`（1–4，缺省取 `/api/health` 的 `default_parallel`），但当前前端 `App.vue` 恒传 `1`——添加任务卡片里没有并发控件，`.parallel*` 那套 CSS 与 `TaskBoard` 的「并发 N」分支是上一次迭代的残留。要恢复 UI，接上控件即可；要临时提速，用 `PITCHMORPH_PARALLEL`。
 
 工作台用单个 `AudioContext` + 每轨一个 `MediaElement` + `GainNode`：播放时以第一轨为主时钟，`requestAnimationFrame` 里检测漂移（>80ms 就校正）。波形不调 `decodeAudioData`，而是直接解析 PCM16 WAV 字节算峰值——省掉一份 float32 的 AudioBuffer。已播放部分是叠在灰波形上的第二张 canvas，靠 `clip-path: inset(0 calc(100% - var(--p)) 0 0)` 裁切，避免每帧重绘。
 

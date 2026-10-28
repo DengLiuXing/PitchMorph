@@ -7,7 +7,7 @@ first session, which is exactly the trap the old ``config.providers()``
 docstring warned about.
 
 So availability is not evidence. We preload the wheel's CUDA/cuDNN libraries,
-build a ~150-byte Identity graph on the CUDA EP and run it once. Only a graph
+build a 92-byte Identity graph on the CUDA EP and run it once. Only a graph
 that allocates and executes on the GPU counts as usable; anything else keeps
 the CPU provider and records a reason for the UI.
 
