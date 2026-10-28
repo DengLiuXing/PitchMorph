@@ -1,0 +1,150 @@
+# PitchMorph
+
+本地声轨分离工具。把混音（或带音轨的视频）拖进浏览器，服务端用 **HT-Demucs FT 的 ONNX 权重**分出鼓 / 贝斯 / 其他 / 人声，页面上四轨同步试听、静音独奏、逐轨或打包下载。
+
+- 纯 ONNX Runtime 推理，**不安装 PyTorch**
+- 视频 / 容器解码用**内置 ffmpeg**，无需单独安装
+- 音频不出本机；单进程、无 Redis / Celery、前端免构建
+
+> 本期只做分离。音高线提取与 OpenUtau 导入在后续里程碑（见文末）。
+
+## 功能
+
+- **任务列表**：像下载器一样管理多个任务——进行中 / 已完成 / 失败取消三组，带阶段、百分比与耗时
+- **批量添加**：一次拖入多个文件排队处理（服务端串行）
+- **重试**：取消或失败的任务直接重跑，复用已存的输入，不用重新上传
+- **四轨工作台**：共享时间轴的波形、贯穿播放头、单轨静音 / 独奏 / 音量 / 下载
+
+## 环境要求
+
+| 依赖 | 说明 |
+|---|---|
+| Python **3.11** | `demucs-onnx` 要求 ≥3.11，其 C 扩展依赖在 3.11 上最稳 |
+| [uv](https://docs.astral.sh/uv/) | 用于创建虚拟环境与运行 |
+| ffmpeg | **随依赖内置**（`imageio-ffmpeg` 提供静态二进制），无需单独安装 |
+
+`uv sync` 会把 `imageio-ffmpeg` 一起装好，解码视频 / m4a 这类容器不需要你对系统做任何配置。探测顺序是：
+
+```
+PITCHMORPH_FFMPEG（手动指定）→ 内置 → 系统 PATH
+```
+
+内置版优先是为了跨机器行为一致；想用自己那份（比如更新或带特殊编码器）就设 `PITCHMORPH_FFMPEG`。
+
+## 支持的输入
+
+| 类别 | 格式 | 解码方式 |
+|---|---|---|
+| 音频 | wav / flac / mp3 / ogg / aiff | libsndfile（不经过 ffmpeg） |
+| 容器 | mp4 / m4a / **m4s** / mov / mkv / webm / avi / ts / flv / 3gp / wmv / aac / opus | ffmpeg，**只取第一条音轨**，画面直接丢弃 |
+
+有 ffmpeg 时不再按扩展名白名单拦截：任何能解封装的容器都放行，读不出来时返回 ffmpeg 的具体原因。
+
+> `.m4s` 只是分片 MP4 的命名习惯。浏览器缓存目录里常见 `video.m4s` 和 `audio.m4s` 两个文件——拖音频那段，视频那段没有音轨会直接被拒。
+
+## 启动
+
+```powershell
+uv sync
+uv run uvicorn app.main:app --port 8000
+```
+
+打开 <http://127.0.0.1:8000>。
+
+首次选择某一档位时会下载对应权重（缓存在 `data/models`），下载完成后再分轨就不再联网。
+
+### 先单独把权重下好（推荐）
+
+下载进度不跟任务轮询绑在一起，也可以断点续传：
+
+```powershell
+uv run python -m app.weights --list      # 看需要哪些文件
+uv run python -m app.weights vocals      # 166 MB，只下四轨档里的人声专家
+uv run python -m app.weights quality     # 660 MB，四轨质量档（已包含 vocals）
+uv run python -m app.weights fast        # 166 MB，四轨快速档的单文件模型
+```
+
+下载卡住时按这个顺序试：
+
+```powershell
+$env:HF_HUB_DISABLE_XET = "1"                    # 关掉 Xet 传输
+$env:HF_ENDPOINT = "https://hf-mirror.com"       # 换国内镜像
+uv run python -m app.weights vocals
+```
+
+下完再启动服务，界面里的档位会直接显示「已缓存」。
+
+| 档位 | 模型 | 权重体积 | 3 分钟歌曲的预计耗时 |
+|---|---|---|---|
+| 四轨 · 质量优先（默认） | `htdemucs_ft` 四专家集成 | 660 MB | 2–5 分钟 |
+| 仅人声 | `htdemucs_ft_vocals` | 166 MB | 1–2 分钟 |
+| 四轨 · 快速 | `htdemucs` 单文件 | 166 MB | 1–3 分钟 |
+
+体积与耗时都是 CPU 上的量级参考；耗时随机器核数与曲目长度变化。
+
+## 环境变量
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `PITCHMORPH_DATA_DIR` | `./data` | 任务目录与权重缓存的根 |
+| `PITCHMORPH_FFMPEG` | 内置 → 系统 PATH | 指定 ffmpeg 可执行文件路径，优先于内置版 |
+| `PITCHMORPH_PROVIDERS` | `CPUExecutionProvider` | 传给 ONNX Runtime 的执行器，逗号分隔（如 `CUDAExecutionProvider,CPUExecutionProvider`） |
+| `HF_ENDPOINT` | 官方源 | 国内网络可设为 `https://hf-mirror.com` |
+
+```powershell
+$env:HF_ENDPOINT = "https://hf-mirror.com"
+uv run uvicorn app.main:app --port 8000
+```
+
+## 使用限制
+
+- 单文件 ≤ **300 MB**，提取出的音频 ≤ **12 分钟**（上限按音频算，画面不计入）；容器类文件先读头部时长，超限直接拒绝、不做转码
+- 输出固定为 **44.1 kHz / 16-bit 立体声 WAV**；单轨下载名为 `<源文件名>-<stem>.wav`，多个任务之间不会重名
+- 串行处理，**同时最多 3 个任务处于活动状态**（1 个在跑，其余排队），超出直接拒绝
+- 任务列表是服务端状态，刷新页面不会丢；但**服务重启后列表会清空**（磁盘目录仍保留到 TTL 到期）
+- 取消的生效粒度是**一个 7.8 秒的分块**（7.8 s @ 44.1 kHz 是 ONNX 图的固定输入长度），实测延迟 1–10 秒；权重下载阶段取消则立即生效
+- 任务目录保留 24 小时后自动清理
+
+## 接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/jobs` | 上传（multipart：`file` + `tier`），立即返回 `job_id` |
+| `GET` | `/api/jobs` | 任务列表（新 → 旧），页面靠它恢复整张列表 |
+| `GET` | `/api/jobs/{id}` | 单个任务阶段、进度、已产出轨道 |
+| `POST` | `/api/jobs/{id}/cancel` | 请求取消（7.8 秒分块边界生效） |
+| `POST` | `/api/jobs/{id}/retry` | 用已存的 `input.wav` 重跑，不用重新上传 |
+| `DELETE` | `/api/jobs/{id}` | 删除任务与目录 |
+| `GET` | `/api/jobs/{id}/download` | 打包下载全部轨道（`<源文件名>-stems.zip`，内含同名目录） |
+| `GET` | `/api/models` | 档位元数据与权重缓存状态 |
+| `GET` | `/api/health` | 执行器、ffmpeg、权重目录、支持格式 |
+
+分轨音频通过 `/media/{id}/stems/{stem}.wav` 静态提供（`/media` 挂载在 `data/jobs`，支持 Range，浏览器可拖动定位）。
+
+## 目录结构
+
+```
+app/
+├── config.py      # 路径、上限、档位、ffmpeg 三级探测
+├── separator.py   # 解码规整 + 自管分块推理（唯一的 demucs-onnx 接触点）
+├── jobs.py        # 内存任务表 + 单 worker 队列 + 取消 + TTL 清理
+├── schemas.py     # 接口数据结构
+├── main.py        # FastAPI 路由与静态挂载
+├── weights.py     # 权重预下载 CLI（python -m app.weights）
+└── static/        # index.html / style.css / app.js（无构建、无 CDN）
+scripts/
+├── smoke_offline.py  # 分轨流程回归，不需要权重
+└── smoke_media.py    # 容器格式回归（mp4 / m4s / 无音轨 / 超长）
+data/
+├── jobs/<id>/     # input.wav、stems/*.wav、package.zip
+└── models/        # ONNX 权重缓存
+```
+
+## 后续里程碑
+
+- **M2 · 音高线提取**：对 `stems/vocals.wav` 做 f0 估计与音符切分，产出可编辑的音高曲线。实现时新增 `features/` 目录（与 `stems/` 平级），不改动现有接口。
+- **M3 · 导入 OpenUtau**：输出 `.ustx`（OpenUtau 原生工程格式，`notes` + `curves`）或配套 MIDI，让音高线直接落到工程里。
+
+## 开发文档
+
+架构细节、为什么绕开 `demucs_onnx.separate()`、调试命令和踩过的坑，见 [AGENTS.md](AGENTS.md)。

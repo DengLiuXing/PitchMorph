@@ -1,0 +1,15 @@
+[project]
+name = "pitchmorph"
+version = "0.1.0"
+description = "Local stem separation tool powered by HT-Demucs FT via ONNX Runtime"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "demucs-onnx==0.3.4",
+    "imageio-ffmpeg>=0.5",
+]
+
+[tool.uv]
+package = false
