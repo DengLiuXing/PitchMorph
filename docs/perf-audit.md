@@ -1,6 +1,7 @@
 # 性能诊断：分轨为什么慢 / 能不能上 GPU
 
 日期：2026-10-27　状态：**诊断完成，优化未落地**（本文只记录结论与待办，代码未改）
+更新 2026-10-28：批式并行已落地、默认档改为「仅人声」，实测结论见文末「2026-10-28 落地与实测」。
 
 ---
 
@@ -99,13 +100,14 @@
 
 ## 待办（按收益排序）
 
-- [ ] **1. 默认档位 `quality` → `fast`**（`app/config.py:93`，改 1 行）
-      推算 512 s → 约 124 s（约 4×）。依据：单文件模型一次出 4 轨，单块成本 ≈ 单专家（`69 × 1.72 + 4.2`）。
-      验证方式：用 `samples/美丽之物.mp3` 跑 fast 档，与本文 512.1 s 对比。风险仅为音质取舍。
+- [x] **1. 默认档位换档**（`app/config.py:93`，改 1 行）
+      **实际选择的是 `vocals`（仅人声）而不是 `fast`**：只跑一个专家，算力约为四专家档的四分之一。
+      配套改了 `/api/models` 的返回顺序（前端取第一项作为默认选中），否则只改常量界面不会跟。
 - [ ] **2. 电源方案改「高性能」+ 接电源**，消掉 1.21 → 1.72 s 那 42% 的退化。零成本，重新跑一次 e2e 即可验证。
-- [ ] **3. 去掉每 stem 的 `clear()`**（`app/separator.py:389,415`）
-      第二单起每单省 16–20 s（约 4–5%）。代价：常驻 2.4 GB 内存。不改变数值结果（`_chunked_infer` 无跨调用状态）。
-      需同步确认 `/api/health` 的 `active_providers` 展示（它读 `config.providers()`，不受影响）。
+- [x] **3. 去掉每 stem 的 `clear()`**（`app/separator.py:389,415`）
+      以「批后 clear」实现：批内主线程预建 session → 并发跑 → join → `clear()` → 下一批。
+      **注意这里并没有"第二单省 16–20 s"的收益**——每个专家都要加载一次，批后清池意味着下一个任务照样重新加载；真正跨任务复用需要完全不 clear（常驻 2.4 GB），本轮没做。
+      不改变数值结果：批式 parallel=1 与改造前的串行实现逐采样比对 **max abs diff = 0**。
 - [ ] **4. overlap 0.25 → 0.125**（`app/separator.py:293` + `:296` 两处必须同改）
       块数 69 → 59（−14.5%）。**会改变输出音频**，块边界平滑量减少，需按 AGENTS.md 的逐采样比对重新验收。
 - [ ] **5. 上 CUDA**（独立 venv）——收益与第 1 条重叠，建议等 1、2 落地后再评估。
@@ -166,6 +168,29 @@ GPU 上**务必让 4 个 session 常驻**，不要每 stem `clear()`，否则图
 | 0.57–1.15 s（1.5–3×） | 先看第 1 条并行能到多少，再决定是否叠加 |
 | > 1.15 s（<1.5×） | 放弃 GPU，留在 CPU |
 
+## GPU 实测（2026-10-28，已落地）
+
+环境：RTX 5060 Laptop 8 GB / 驱动 617.42（CUDA UMD 13.4）/ 系统 CUDA Toolkit 13.4（DLL 在 `bin\x64`）/ `onnxruntime-gpu 1.31.1` + `nvidia-cudnn-cu13 9.27`。
+
+**同条件对比**（60 秒素材，vocals 档，11 个 chunk）：
+
+| | CPU | GPU | 倍数 |
+|---|---|---|---|
+| 单块 | 1.227 s | **0.702 s** | 1.75× |
+| 推理总耗时 | 13.9 s | 8.4 s | 1.65× |
+| 全流程 | 17.9 s | 12.6 s | 1.42× |
+
+**首次运行有 CUDA 图编译**：8 秒素材（2 个 chunk）首测 3.78 s/chunk，第二次才回到稳态。短样本测不出真实收益，至少要跑到 10 个 chunk。
+
+**结论：加速 1.75×，未达 3× 门槛。** 但对比 CPU 并行（实测 85 s → 143 s，反向优化），GPU 是唯一稳定有效的方向。
+
+未达 3× 的可能原因（未逐项验证）：`batch=1` + 定长 7.8 s 输入让 kernel launch 与 H2D/D2H 占比过高；模型仅 79 M 参数，单块算力喂不满 GPU；电源方案仍是「平衡」，CPU/GPU 都降频。
+
+**踩到的两个坑（已修）**：
+
+1. **探针假阳性**：最小 Identity 图不经过卷积，cuDNN 缺失时照样跑通并报「CUDA 可用」，真实模型在第一个 Conv 崩掉。已加 `runtime._missing_cudnn()` 单独检查 `cudnn64_9.dll`。
+2. **`uv sync` 会删除依赖图外的包**：手工 `uv pip install nvidia-cudnn-cu13` 装的东西在下一次 sync 被清掉。已把 cuDNN 写进 `[project.dependencies]`（Windows 标记），并把 `demucs-onnx` 的 `Requires-Dist: onnxruntime` 用 `override-dependencies` 改写成仅 macOS 生效——这样 Windows/Linux 上只装 GPU 包，`uv sync` / `uv run` 都不再需要额外参数。
+
 ## 复现方法
 
 临时脚本放在系统临时目录（不在仓库内，关机可能被清理）：`%TEMP%\pitchmorph-bench\`
@@ -189,3 +214,33 @@ bench_e2e.py     端到端插桩     → out/e2e.json（含 276 条 run 序列�
 - `demucs_onnx.inference._make_session` 的 pool key 是 `(path, "", tuple(providers))`，**不含 SessionOptions**；
   monkeypatch 后必须 `session_pool().clear()` 才会重建。
 - 上游 `cli.py` / 文档里 "htdemucs ~30% faster than FT bag" 的说法在 ONNX 场景不成立：这里是 4 张独立图逐张跑，实际接近 4×。
+
+## 2026-10-28 落地与实测
+
+### 已落地
+
+- `separate_stems` 支持批式并发（`parallel` 参数 + `PITCHMORPH_PARALLEL`），前端提交任务时可选 1–4，单轨档位置灰。
+- 默认档位 `quality` → `vocals`（仅人声）；`/api/models` 按默认档优先排序，否则前端仍会选第一项。
+- 进度改为「各 stem 完成比例之和 / stem 数」，锁内取单调最大值再上报；取消用批内共享 `threading.Event`，任一 worker 失败其余在下一个块边界退出。
+
+### 实测（同日，电源方案仍为「平衡」）
+
+| 场景 | parallel=1 | parallel=2 | 结论 |
+|---|---|---|---|
+| 60 s 片段（quality 档） | **85.4 s** | **143.4 s** | 并行慢 68% |
+| 398.9 s 全曲（quality 档） | **520.0 s** | 未跑完：批 2 中途进程被系统终止，WorkingSet 10.2 GB | — |
+
+- 短样本并行时 WorkingSet 峰值约 **9.7 GB**。"批大小 × 0.6 GB"的估算完全不成立——ORT 的 CPU arena 随线程数膨胀。
+- 数值一致性：批式 parallel=1 与改造前的串行实现（`%TEMP%\pitchmorph-bench\out\e2e\`，10-27 产出）四轨 **max abs diff = 0**；parallel=1 与 parallel=2 之间四轨也 **= 0**。并发不改变数值。
+- 全曲 parallel=1 比 10-27 的 512.1 s 慢 1.5%，属于温度/电源状态漂移。
+
+### 结论
+
+**默认并行度定为 1**，并行能力作为可选开关保留（`PITCHMORPH_PARALLEL` / 前端控件），不做删除。
+
+根因与线程扫描一致：两个默认线程池的 session 等于 48 线程抢 24 个硬件线程，超订代价大于重叠收益。真要并行，得先给每个 session 限制 `intra_op_num_threads`（例如各 8 线程）——这需要绕开 `SessionPool` 的建 session 路径（池 key 不含 `SessionOptions`），改造成本与收益都还没验证。
+
+### 待验证（用短素材）
+
+- 全曲 `parallel=2` 的实际耗时（本轮没跑完）；短样本的 143.4 s 里还含两次 session 加载（约 14 s）。
+- `parallel=4` 未测。

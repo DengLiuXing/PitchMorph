@@ -1,18 +1,14 @@
 ---
-name: PitchMorph 性能优化：2026-10-28 的两步计划
-description: 明天先加 CPU 多专家并行推理，再用本机 CUDA 实测 GPU 提升；基线数据与改动点都在 docs/perf-audit.md
+name: PitchMorph 性能优化：并行已落地但默认关闭
+description: 2026-10-28 批式并行落地、默认档切 vocals；实测 parallel=2 更慢且吃 10 GB 内存，默认并行度定为 1
 type: project
 ---
 
-2026-10-28 的既定顺序：**先做 CPU 多专家并行推理，再做本机 CUDA 实测**。
+2026-10-28 已完成三件事：批式并行实现（`separate_stems` 按 `parallel` 切批，批后 `session_pool().clear()`）、默认档从 `quality` 切到 `vocals`（仅人声）、前端提交任务时可选 1–4 的并行度。
 
-基线（2026-10-27 实测，399 秒 MP3 / quality 档四专家）：总耗时 512.1 秒，其中推理 488.6 秒占 95.4%，单块中位 1.72 秒，解码 0.6 秒、四次模型加载 19.8 秒、写盘 1.2 秒。机器是 i7-14650HX（16 核 24 线程）+ RTX 5060 Laptop（sm_120，驱动 617.42 / CUDA 13.4，电源方案「平衡」）。
+**核心结论：parallel=2 更慢，默认并行度定为 1（`config.default_parallel()`）。**
+实测：60 s 片段 quality 档 85.4 s → 143.4 s（慢 68%），WorkingSet 从约 3 GB 涨到 9.7 GB；398.9 s 全曲 parallel=1 = 520.0 s，parallel=2 在第二批中途被系统终止（10.2 GB）。数值无问题：parallel=1 与改造前串行实现、parallel=1 与 parallel=2 之间，四轨均逐采样 diff = 0。
 
-两个关键约束，明天动手前必须先想起：
+**Why:** 单 session 已经吃满 16 个物理核（线程扫描默认 1.19 s 最优、24 线程 1.80 s），两个默认线程池的 session 等于 48 线程抢 24 个硬件线程，超订代价大于重叠收益。另外"批大小 × 0.6 GB"的内存估算被证伪，ORT 的 CPU arena 随线程数膨胀。
 
-- **单 session 已经吃满物理核**：线程扫描显示默认最好（1.19 s），24 线程反而 1.80 s。所以「CPU 多线程」只能理解为**同时跑两个独立 session**，预期收益 0~34%（中性约 17%），不是线性翻倍。`app/jobs.py:90` 的单 worker 不要动，并行放在 `separate_stems` 内部。
-- **并行必须同时处理两处隐患**：`app/separator.py:415` 的 `session_pool().clear()` 会清空整个池（并行时会清掉别人正在用的 session），`app/separator.py:402-403` 的进度回调在并行下会让百分比倒退。
-
-**Why:** 用户 2026-10-27 下班前明确要求「明天先把 CPU 多线程调用推理模型加上，然后用本机 CUDA 测一下 GPU 实际提升效果」，并要求记录下来、次日提醒。诊断已完成但代码一行未改。
-
-**How to apply:** 明天开工时先读 `docs/perf-audit.md` 的「明天计划」章节（含逐行改动点、验收标准与 GPU 判定门槛：单块 < 0.57 s 才值得落地）。CUDA 测试必须在独立 venv 里做，装完 `onnxruntime-gpu[cuda,cudnn]` 后要卸掉 CPU 版 `onnxruntime`，否则同模块名冲突。
+**How to apply:** 不要再把并行当成默认提速方向；用户若问"还能怎么快"，顺序是 ① 换档位（默认已是 vocals，只有要四轨才走 quality）② 电源方案「高性能」③ 给每个 session 限 `intra_op_num_threads` 后再试并行（需要绕开 `SessionPool` 的池 key，未验证）。CUDA 仍未实测，落地门槛是单块 < 0.57 s。全曲 parallel=2 与 parallel=4 的耗时还没补测，用户 2026-10-28 表示要找短素材再测。
