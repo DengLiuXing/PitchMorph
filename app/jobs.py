@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config, separator
+from . import config, runtime, separator
 from .schemas import JobStage
 
 log = logging.getLogger("pitchmorph.jobs")
@@ -39,6 +39,7 @@ class Job:
     done: int = 0
     total: int = 1
     frac: float = 0.0
+    parallel: int = 1
     error: str | None = None
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
@@ -91,7 +92,26 @@ class JobRegistry:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def create(self, *, filename: str, size_bytes: int, tier: config.ModelTier) -> Job:
+    def create(
+        self,
+        *,
+        filename: str,
+        size_bytes: int,
+        tier: config.ModelTier,
+        parallel: int = 1,
+    ) -> Job:
+        # Two specialists on one GPU split the same compute and double the
+        # VRAM, so concurrency only ever helps on CPU. Clamped here rather than
+        # in the worker so the echoed job state never promises a parallelism
+        # the run does not have.
+        if parallel > 1 and runtime.using_cuda():
+            log.info(
+                "parallel %d clamped to 1 — CUDA mode gains nothing from "
+                "concurrent specialists",
+                parallel,
+            )
+            parallel = 1
+
         job_id = uuid.uuid4().hex
         job_dir = config.JOBS_DIR / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -103,6 +123,7 @@ class JobRegistry:
             duration_sec=0.0,
             dir=job_dir,
             total=len(tier.stems),
+            parallel=parallel,
         )
         with self._lock:
             self._jobs[job_id] = job
@@ -205,6 +226,7 @@ class JobRegistry:
                 job.input_wav,
                 job.stems_dir,
                 tier=job.tier,
+                parallel=job.parallel,
                 on_stage=on_stage,
                 on_progress=on_progress,
                 should_cancel=job.cancel.is_set,

@@ -28,6 +28,11 @@ MAX_DURATION_SEC = 12 * 60
 MAX_QUEUED_JOBS = 3
 JOB_TTL_SEC = 24 * 3600
 
+#: Sessions kept alive between jobs. On CUDA a rebuild means a graph compile,
+#: so the whole specialist bag stays resident; the cap is headroom for a future
+#: 6-stem model rather than something the current four reach.
+MAX_RESIDENT_SESSIONS = 4
+
 #: Our output is WAV, so the fp16 weights variant is strictly better: half the
 #: download, identical runtime precision (the graph still computes in fp32).
 PRECISION = "fp16weights"
@@ -90,10 +95,15 @@ TIERS: dict[str, ModelTier] = {
     ),
 }
 
-DEFAULT_TIER = "quality"
+DEFAULT_TIER = "vocals"
 
 #: Models that emit every stem from a single ONNX file (one inference call).
 SINGLE_FILE_MODELS = frozenset({"htdemucs", "htdemucs_6s"})
+
+#: Cap on concurrently loaded specialist graphs inside one job. A single session
+#: already saturates the physical cores (docs/perf-audit.md), so going wider
+#: mostly buys thread oversubscription and memory.
+MAX_PARALLEL = 4
 
 
 @lru_cache(maxsize=1)
@@ -182,12 +192,34 @@ def can_accept(suffix: str) -> bool:
 
 
 def providers() -> list[str]:
-    """ORT execution providers. Explicit, never auto-detected.
+    """ORT execution providers for this process.
 
-    A wrong auto-pick (e.g. DirectML on a machine without the CUDA toolkit)
-    fails with an opaque ORT error instead of merely running slower.
+    Delegates to :mod:`app.runtime`, which probes CUDA for real: a GPU wheel
+    can be installed on a machine with no CUDA DLLs at all, so
+    ``get_available_providers()`` alone would pick a provider that cannot
+    actually build a session. ``PITCHMORPH_PROVIDERS`` still wins over
+    everything, so CPU can be forced even when CUDA works.
     """
-    raw = os.environ.get("PITCHMORPH_PROVIDERS", "").strip()
-    if not raw:
-        return ["CPUExecutionProvider"]
-    return [p.strip() for p in raw.split(",") if p.strip()]
+    from . import runtime
+
+    return runtime.providers()
+
+
+def default_parallel() -> int:
+    """Specialists running at once: ``PITCHMORPH_PARALLEL``, default 1.
+
+    Read lazily (not at import) so the value can follow the environment between
+    calls, matching :func:`providers`. Out-of-range or garbage falls back to the
+    safe default instead of failing a job.
+
+    Default is 1 on purpose: measured on i7-14650HX, two 24-thread sessions
+    oversubscribe the 24 hardware threads enough that the bag runs *slower*
+    than serial (85 s → 143 s on a 60 s clip) while peaking near 10 GB RSS.
+    See docs/perf-audit.md. The knob stays for machines with more cores.
+    """
+    raw = os.environ.get("PITCHMORPH_PARALLEL", "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 1
+    return max(1, min(value, MAX_PARALLEL))

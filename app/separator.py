@@ -24,13 +24,14 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 import soxr
 
-from . import config
+from . import config, runtime
 from .weights import missing_files, required_files, weights_cached
 
 log = logging.getLogger("pitchmorph.separator")
@@ -334,6 +335,7 @@ def separate_stems(
     out_dir: Path,
     *,
     tier: config.ModelTier,
+    parallel: int = 1,
     on_stage: StageCallback | None = None,
     on_progress: ProgressCallback | None = None,
     should_cancel: CancelCheck | None = None,
@@ -343,11 +345,14 @@ def separate_stems(
     ``src_wav`` must already be 44.1 kHz stereo (see :func:`decode_to_wav`) so
     that the emitted stems share the input's sample rate.
 
-    The ``htdemucs_ft`` bag runs one specialist at a time: peak memory stays at
-    a single session, each stem boundary adds another cancel checkpoint, and the
-    result is identical to running the whole bag.
+    The ``htdemucs_ft`` bag runs its specialists in batches of ``parallel`` (one
+    session per stem, so it is clamped to ``len(tier.stems)``). Two constraints
+    shape the batch shape: a single session already saturates the physical cores
+    (``docs/perf-audit.md``), and ``session_pool().clear()`` drops the whole
+    process-wide pool, so it may only run while no worker holds a session.
+    Peak memory is ``parallel`` sessions (~0.6 GB each) instead of all four.
     """
-    from demucs_onnx import load_audio, session_pool
+    from demucs_onnx import load_audio
 
     out_dir.mkdir(parents=True, exist_ok=True)
     total = len(tier.stems)
@@ -377,7 +382,7 @@ def separate_stems(
             sources = _model_sources(tier.model)
             wanted = {stem: sources.index(stem) for stem in tier.stems}
             notify("loading", None, 0)
-            session = session_pool().get(paths[tier.model], config.providers())
+            session = runtime.ensure_session(paths[tier.model])
             notify("separating", tier.stems[0], 0)
             audio = _chunked_infer(
                 session,
@@ -386,21 +391,32 @@ def separate_stems(
                 on_chunk=lambda done, chunks: report(done / chunks),
                 should_cancel=should_cancel,
             )
-            session_pool().clear()
             for stem in tier.stems:
                 _write_stem(out_dir / f"{stem}.wav", audio[stem])
             notify("separating", tier.stems[-1], total)
         else:
-            for index, stem in enumerate(tier.stems):
-                check()
-                notify("loading", stem, index)
-                session = session_pool().get(paths[stem], config.providers())
-                # Flip to "separating" as soon as the session exists: the chunk
-                # loop below is where the time actually goes.
-                notify("separating", stem, index)
+            workers = max(1, min(parallel, total))
+            batch_count = (total + workers - 1) // workers
+            ratios: dict[str, float] = {}
+            reported = 0.0
+            durations: dict[str, float] = {}
+            lock = threading.Lock()
+            abort = threading.Event()
 
-                def on_chunk(done: int, chunks: int, base: int = index) -> None:
-                    report((base + done / chunks) / total)
+            def worker_cancel() -> bool:
+                return abort.is_set() or (should_cancel() if should_cancel else False)
+
+            def run_stem(stem: str, session) -> np.ndarray:
+                def on_chunk(done: int, chunks: int) -> None:
+                    nonlocal reported
+                    with lock:
+                        ratios[stem] = done / chunks
+                        # Reported inside the lock: workers finish out of order,
+                        # so only the guarded max keeps the bar monotonic.
+                        progress = sum(ratios.values()) / total
+                        if progress > reported:
+                            reported = progress
+                            report(progress)
 
                 started = time.monotonic()
                 audio = _chunked_infer(
@@ -408,15 +424,55 @@ def separate_stems(
                     {stem: SOURCES.index(stem)},
                     mix,
                     on_chunk=on_chunk,
-                    should_cancel=should_cancel,
+                    should_cancel=worker_cancel,
+                )[stem]
+                durations[stem] = time.monotonic() - started
+                return audio
+
+            # Sessions are built up front on this thread: SessionPool.get() is an
+            # unlocked get-or-create, so concurrent misses would race.
+            for batch_index, start in enumerate(range(0, total, workers)):
+                batch = tier.stems[start:start + workers]
+                check()
+                sessions = {}
+                for stem in batch:
+                    notify("loading", stem, start)
+                    sessions[stem] = runtime.ensure_session(paths[stem])
+                # Flip to "separating" as soon as the sessions exist: the chunk
+                # loops below are where the time actually goes.
+                notify("separating", batch[0], start)
+                log.info(
+                    "batch %d/%d — %s (parallel=%d)",
+                    batch_index + 1,
+                    batch_count,
+                    " + ".join(batch),
+                    len(batch),
                 )
-                # The session pool is process-wide; dropping it here keeps peak
-                # RSS at one specialist instead of four.
-                session_pool().clear()
-                _write_stem(out_dir / f"{stem}.wav", audio[stem])
-                log.info("%s: %s in %.1fs", tier.model, stem, time.monotonic() - started)
-                notify("separating", stem, index + 1)
-                report((index + 1) / total)
+                with ThreadPoolExecutor(
+                    max_workers=len(batch), thread_name_prefix="stem",
+                ) as pool:
+                    futures = {
+                        pool.submit(run_stem, stem, sessions[stem]): stem
+                        for stem in batch
+                    }
+                    audios: dict[str, np.ndarray] = {}
+                    try:
+                        for future in as_completed(futures):
+                            audios[futures[future]] = future.result()
+                    except BaseException:
+                        # Release the siblings at their next chunk boundary
+                        # instead of letting them finish the whole song.
+                        abort.set()
+                        raise
+                for offset, stem in enumerate(batch, start=start):
+                    _write_stem(out_dir / f"{stem}.wav", audios[stem])
+                    log.info("%s: %s in %.1fs", tier.model, stem, durations[stem])
+                    notify("separating", stem, offset + 1)
+                    ratios[stem] = 1.0
+                progress = sum(ratios.values()) / total
+                if progress > reported:
+                    reported = progress
+                    report(progress)
     except Canceled:
         _cleanup(out_dir)
         raise
@@ -426,6 +482,11 @@ def separate_stems(
     except Exception as exc:
         _cleanup(out_dir)
         raise SeparationError(friendly_error(exc)) from exc
+    finally:
+        # Runs on success, cancel and failure alike: trimming only when the
+        # pool outgrew its cap keeps the bag warm across jobs without letting
+        # a future 6-stem model grow the process without bound.
+        _trim_sessions()
 
     log.info("job separation finished in %.1fs", time.monotonic() - started_all)
 
@@ -435,6 +496,28 @@ def separate_stems(
         missing = sorted(set(tier.stems) - set(produced))
         raise SeparationError(f"模型未产出预期轨道：{', '.join(missing)}")
     return produced
+
+
+def _trim_sessions() -> None:
+    """Drop cached sessions only when the pool outgrew its cap.
+
+    Clearing after every job would re-pay the ~4 s load per specialist on CPU
+    and a full graph compile per specialist on CUDA — the exact cost the
+    resident pool exists to avoid. The cap leaves headroom for future models.
+    """
+    try:
+        from demucs_onnx import session_pool
+
+        pool = session_pool()
+        if len(pool) > config.MAX_RESIDENT_SESSIONS:
+            log.info(
+                "session pool trimmed (%d > %d)",
+                len(pool),
+                config.MAX_RESIDENT_SESSIONS,
+            )
+            pool.clear()
+    except Exception:  # cleanup must never fail an already-finished job
+        log.debug("session trim skipped", exc_info=True)
 
 
 def _cleanup(out_dir: Path) -> None:

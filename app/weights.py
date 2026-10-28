@@ -1,7 +1,7 @@
 """Pre-download ONNX weights without running a separation job.
 
     uv run python -m app.weights --list
-    uv run python -m app.weights            # 默认档（四轨质量档，660 MB）
+    uv run python -m app.weights            # 默认档（仅人声，166 MB）
     uv run python -m app.weights vocals     # 只下 166 MB 的人声专家
     uv run python -m app.weights all
 
@@ -83,9 +83,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "tier",
         nargs="?",
-        default="quality",
+        default=config.DEFAULT_TIER,
         choices=[*config.TIERS, "all"],
-        help="档位（默认 quality）",
+        help=f"档位（默认 {config.DEFAULT_TIER}）",
     )
     parser.add_argument("--list", action="store_true", help="只列出需要哪些文件")
     args = parser.parse_args(argv)

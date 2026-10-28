@@ -32,6 +32,7 @@ class JobStatusResponse(BaseModel):
     stem: str | None
     done: int
     total: int
+    parallel: int = 1
     elapsed_sec: float
     wait_sec: float
     duration_sec: float
@@ -61,6 +62,11 @@ class HealthResponse(BaseModel):
     onnxruntime: str
     available_providers: list[str]
     active_providers: list[str]
+    #: True only when a real CUDA session could be built, not merely when the
+    #: wheel advertises CUDAExecutionProvider.
+    gpu_ready: bool = False
+    #: Why CUDA was not used, ready to show in the UI. None when it was.
+    gpu_reason: str | None = None
     ffmpeg: str | None
     ffmpeg_version: str | None
     ffmpeg_source: str | None
@@ -68,3 +74,5 @@ class HealthResponse(BaseModel):
     supported_exts: list[str]
     max_upload_mb: int
     max_duration_sec: int
+    default_parallel: int = 1
+    max_parallel: int = 4

@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import config, jobs, separator
+from . import config, jobs, runtime, separator
 from .schemas import (
     HealthResponse,
     JobCreateResponse,
@@ -55,10 +55,33 @@ async def lifespan(_: FastAPI):
                 log.exception("reaper failed")
 
     task = asyncio.create_task(reaper())
-    log.info("PitchMorph ready — data dir %s", config.DATA_DIR)
+
+    # Probe before serving: it takes tens of milliseconds and decides the
+    # provider the UI shows on first paint. It runs in a thread because the
+    # probe builds a real ONNX session, and on CUDA that means loading DLLs.
+    usable, reason = await run_in_threadpool(runtime.gpu_status)
+    if usable:
+        log.info("PitchMorph ready — data dir %s, CUDA execution provider", config.DATA_DIR)
+    else:
+        log.info(
+            "PitchMorph ready — data dir %s, CPU fallback (%s)",
+            config.DATA_DIR,
+            reason,
+        )
+
+    # Warm the default tier off the critical path: on CUDA the first session
+    # build compiles the graph, which would otherwise land on the first upload.
+    tier = config.TIERS[config.DEFAULT_TIER]
+
+    async def warm() -> None:
+        await run_in_threadpool(runtime.prewarm, tier.model, tier.stems)
+
+    warm_task = asyncio.create_task(warm())
+
     try:
         yield
     finally:
+        warm_task.cancel()
         task.cancel()
         jobs.registry._pool.shutdown(wait=False)  # noqa: SLF001 - process exit
 
@@ -83,6 +106,7 @@ def _status(job: jobs.Job) -> JobStatusResponse:
         stem=job.stem,
         done=job.done,
         total=job.total,
+        parallel=job.parallel,
         elapsed_sec=job.elapsed_sec,
         wait_sec=job.wait_sec,
         duration_sec=round(job.duration_sec, 2),
@@ -103,6 +127,9 @@ def index() -> FileResponse:
 
 @app.get("/api/models", response_model=list[ModelInfo])
 def list_models() -> list[ModelInfo]:
+    # The frontend preselects the first entry, so the default tier has to lead
+    # the list — DEFAULT_TIER alone only affects the form field default.
+    tiers = sorted(config.TIERS.values(), key=lambda tier: tier.key != config.DEFAULT_TIER)
     return [
         ModelInfo(
             key=tier.key,
@@ -114,7 +141,7 @@ def list_models() -> list[ModelInfo]:
             detail=tier.detail,
             cached=separator.weights_cached(tier.model, tier.stems),
         )
-        for tier in config.TIERS.values()
+        for tier in tiers
     ]
 
 
@@ -122,13 +149,16 @@ def list_models() -> list[ModelInfo]:
 def health() -> HealthResponse:
     import onnxruntime as ort
 
+    gpu_usable, gpu_reason = runtime.gpu_status()
     ffmpeg = config.find_ffmpeg()
     return HealthResponse(
         ok=True,
         python=sys.version.split()[0],
         onnxruntime=ort.__version__,
         available_providers=list(ort.get_available_providers()),
-        active_providers=config.providers(),
+        active_providers=runtime.providers(),
+        gpu_ready=gpu_usable,
+        gpu_reason=gpu_reason,
         ffmpeg=ffmpeg,
         ffmpeg_version=config.ffmpeg_version(ffmpeg),
         ffmpeg_source=config.ffmpeg_source(),
@@ -136,6 +166,8 @@ def health() -> HealthResponse:
         supported_exts=sorted(ext.lstrip(".") for ext in config.supported_exts()),
         max_upload_mb=config.MAX_UPLOAD_BYTES // (1024 * 1024),
         max_duration_sec=config.MAX_DURATION_SEC,
+        default_parallel=config.default_parallel(),
+        max_parallel=config.MAX_PARALLEL,
     )
 
 
@@ -143,9 +175,20 @@ def health() -> HealthResponse:
 async def create_job(
     file: UploadFile = File(...),
     tier: str = Form(config.DEFAULT_TIER),
+    parallel: int | None = Form(None),
 ) -> JobCreateResponse:
     if tier not in config.TIERS:
         raise HTTPException(status_code=400, detail=f"未知模型档位：{tier}")
+    if parallel is None:
+        parallel = config.default_parallel()
+    elif not 1 <= parallel <= config.MAX_PARALLEL:
+        raise HTTPException(
+            status_code=400,
+            detail=f"并行度需在 1–{config.MAX_PARALLEL} 之间，收到 {parallel}",
+        )
+    # One specialist per stem: asking for more than the stem count would be
+    # echoed back to the UI as a concurrency the job never has.
+    parallel = min(parallel, len(config.TIERS[tier].stems))
     if jobs.registry.active_count() >= config.MAX_QUEUED_JOBS:
         raise HTTPException(
             status_code=429,
@@ -166,6 +209,7 @@ async def create_job(
         filename=Path(file.filename or "audio").name,
         size_bytes=0,
         tier=config.TIERS[tier],
+        parallel=parallel,
     )
     raw_path = job.dir / f"source{suffix}"
     size = 0
@@ -226,7 +270,10 @@ async def create_job(
     job.size_bytes = size
     job.duration_sec = duration
     jobs.registry.submit(job)
-    log.info("job %s queued — %s, %.1fs, tier=%s", job.id, job.filename, duration, tier)
+    log.info(
+        "job %s queued — %s, %.1fs, tier=%s, parallel=%d",
+        job.id, job.filename, duration, tier, parallel,
+    )
     return JobCreateResponse(
         id=job.id,
         tier=tier,
@@ -284,6 +331,7 @@ def retry_job(job_id: str) -> JobCreateResponse:
         filename=source.filename,
         size_bytes=source.size_bytes,
         tier=source.tier,
+        parallel=source.parallel,
     )
     try:
         shutil.copy2(source.input_wav, job.input_wav)

@@ -9,7 +9,36 @@ dependencies = [
     "python-multipart>=0.0.9",
     "demucs-onnx==0.3.4",
     "imageio-ffmpeg>=0.5",
+    # The CUDA build everywhere it exists. It carries the CPU execution provider
+    # as well, so a machine without a usable GPU still runs — app/runtime.py
+    # probes at startup and falls back. Installing it unconditionally is what
+    # keeps the start command identical everywhere: `uv run uvicorn ...`, no
+    # flags, no second install step.
+    "onnxruntime-gpu>=1.31.1; sys_platform != 'darwin'",
+    # cuDNN is the one CUDA library with a win_amd64 wheel. The rest of the
+    # runtime (cudart/cublas/cufft/curand/nvrtc) is manylinux-only, so on
+    # Windows it comes from a system CUDA Toolkit install instead.
+    "nvidia-cudnn-cu13>=9.0; sys_platform == 'win32'",
+    # cuDNN pulls these two, and their newest PyPI builds are manylinux-only —
+    # `nvidia-cublas` stops shipping win_amd64 at 13.8.0.4, `nvidia-cuda-nvrtc`
+    # at 13.4.92. Unpinned, uv resolves to the Linux-only build and the whole
+    # resolve fails on Windows. Bump these when NVIDIA publishes newer wheels.
+    "nvidia-cublas==13.8.0.4; sys_platform == 'win32'",
+    "nvidia-cuda-nvrtc==13.4.92; sys_platform == 'win32'",
 ]
 
 [tool.uv]
 package = false
+
+# demucs-onnx hard-depends on the CPU `onnxruntime`, which cannot coexist with
+# `onnxruntime-gpu` — same module name, same directory, overlapping DLLs, and
+# the CPU wheel's uninstall manifest deletes the GPU wheel's files.
+#
+# Rewriting that one declaration to a darwin-only marker means it still resolves
+# on macOS (no CUDA build there) and is skipped on Windows/Linux, so exactly one
+# of the two is ever installed. Without this, `uv run` re-syncs on every launch,
+# reinstalls the CPU wheel and silently replaces the GPU one — which is why the
+# start command used to need `--no-sync`.
+override-dependencies = [
+    "onnxruntime; sys_platform == 'darwin'",
+]
