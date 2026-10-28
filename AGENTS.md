@@ -8,7 +8,7 @@
 |---|---|---|
 | `README.md` | 使用者 | 安装、启动、支持的格式、限制、HTTP 接口 |
 | `AGENTS.md` | 改代码的人 | 本文件：架构、命令、硬约束、踩过的坑 |
-| `docs/perf-audit.md` | 调性能的人 | 耗时构成、并行与 CUDA 的实测档案（按日期追加） |
+| `docs/perf-audit.md` | 调性能的人 | 当前结论、耗时与显存实测、已否决的路线、剩余待办 |
 | `.agent/memory/` | AI 会话 | 跨会话的项目记忆，索引入口 `MEMORY.md` |
 
 ## 常用命令
@@ -17,8 +17,10 @@
 uv sync                                  # 创建 3.11 环境并装依赖（含内置 ffmpeg）
 uv run uvicorn app.main:app --port 8000  # 启动；调代码时加 --reload（注意见下文）
 uv run python scripts/setup.py           # 诊断 CUDA 可用性（只读）；--apply 跑 uv sync
-uv run python scripts/bench.py samples/美丽之物.mp3   # 端到端计时，按阶段拆分
+uv run python scripts/bench.py samples/物凄.m4s       # 端到端计时（短样本，日常迭代）
 ```
+
+`bench.py` 的素材按用途选：`samples/物凄.m4s`（12 s）验证改动是否生效，`samples/《花骨朵》….mp4`（170 s）顺带验证容器解码；只有确认「长跑是否累积显存 / 是否随时间退化」才用整曲 `samples/1333699443-1-30280.m4s`（398.8 s，69 个分块），并在结论里注明用的是整曲。细节见 [docs/perf-audit.md](docs/perf-audit.md)。
 
 回归验证（没有 pytest，这两个脚本就是测试集）：
 
@@ -154,7 +156,7 @@ data/models/         # HF 权重缓存（cache 布局，别手放文件进来）
 
 ## 硬约束
 
-- **改完并行或分块逻辑必须重跑**：`uv run python scripts/smoke_offline.py` 全过，且 parallel=1 与 parallel=2 跑同一首曲子的四轨输出逐采样比对 max abs diff < 1e-3（并发不应改变数值）。
+- **改完并行或分块逻辑必须重跑**：`uv run python scripts/smoke_offline.py` 全过，且 parallel=1 与 parallel=2 跑同一首曲子的四轨输出逐采样比对 max abs diff < 1e-3（并发不应改变数值；比对用短样本即可）。
 - **会话归 `app/runtime.py` 管，不要退回 `demucs_onnx.SessionPool`**：那个池的 key 是 `(path, "", tuple(providers))`，只认 provider 名字、不认选项，`arena_extend_strategy` / `cudnn_conv_algo_search` 这类参数根本传不进去。要改显存行为，走 `runtime._build_session()` 或 `PITCHMORPH_CUDA_OPTS`。
 - **`enable_mem_pattern` 必须保持 `False`**：每块输入形状完全相同，默认开启时 memory pattern 会给每个中间张量各留一块连续内存（生命周期不重叠的也不复用），实测峰值 3.2 → 5.7 GiB；关掉后从第一块起稳定在 3.3 GiB，单块耗时没有变化。
 - **不要安装 `demucs-onnx[export]`**：会拉 `torch>=2.4,<2.5` + `demucs==4.0.1`，与"无 PyTorch"目标直接冲突。输出 WAV 也不需要 `[mp3]`。
@@ -173,4 +175,4 @@ data/models/         # HF 权重缓存（cache 布局，别手放文件进来）
 
 只做分离。音高线提取（M2）与 OpenUtau 导入（M3）尚未实现，只在目录结构上留了接缝。看到任何 audio→MIDI 相关的代码或依赖都属于误加。
 
-性能诊断（分轨为什么慢、GPU 可行性）的实测数据与待办见 [docs/perf-audit.md](docs/perf-audit.md)。
+性能档案（分轨为什么慢、GPU 收益、显存取舍、已否决的路线）与剩余待办见 [docs/perf-audit.md](docs/perf-audit.md)。

@@ -1,6 +1,6 @@
 """Time one separation end to end, split by stage.
 
-    uv run python scripts/bench.py samples/美丽之物.mp3
+    uv run python scripts/bench.py samples/物凄.m4s
     uv run python scripts/bench.py song.mp3 --tier quality --parallel 1
 
 Writes nothing into the repo: the decoded WAV and the stems land in a temp
@@ -10,6 +10,9 @@ whatever else was competing for the CPU/GPU.
 Two things are measured. **Time** per stage, to compare CPU against CUDA on the
 same input. **VRAM**, sampled from ``nvidia-smi`` on a background thread, so one
 run answers "will this peak fit on an 8 GB card" without a second window open.
+
+Short fixtures are the default for iterating; only the long-run question ("does
+VRAM or speed drift after 60+ chunks") needs a full track.
 """
 
 from __future__ import annotations
