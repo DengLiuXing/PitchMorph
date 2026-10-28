@@ -299,6 +299,32 @@ body {
 
 .seg[data-cached="true"] .seg-meta::after { content: " · 已缓存"; color: var(--teal); }
 
+/* ── parallel picker ─────────────────────────────────────────── */
+
+.parallel { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+
+.parallel-label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+
+.parallel-seg { flex: 0 0 auto; gap: 2px; padding: 3px; }
+
+.parallel-seg .seg {
+  flex: 0 0 auto;
+  min-width: 30px;
+  padding: 8px 0;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.parallel-seg .seg:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.parallel-seg .seg:disabled:hover { background: transparent; color: var(--text-2); }
+
 .param-actions { display: flex; align-items: center; gap: 14px; }
 
 .param-hint { margin: 0; font-size: 11.5px; color: var(--text-3); max-width: 260px; }

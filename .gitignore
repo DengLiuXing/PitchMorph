@@ -4,3 +4,12 @@ samples/
 __pycache__/
 *.py[cod]
 .uv-cache/
+
+# Frontend toolchain. app/static is deliberately NOT ignored: it holds the
+# built bundle FastAPI serves, and it must ship with the repo.
+frontend/node_modules/
+frontend/dist/
+
+# Editor and assistant state
+.vscode/
+.codebuddy/
