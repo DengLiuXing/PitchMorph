@@ -12,12 +12,18 @@ from pathlib import Path
 
 from app.domain import (
     PitchCurve,
+    SegmentParams,
     fix_octave_jumps,
+    median_smooth,
     segment,
     to_bend_midi,
     to_note_midi,
 )
 from app.domain.ustx import to_ustx
+
+DEFAULT_SMOOTH = 3
+# 中值滤波窗口必须是奇数；上限给到 15 帧（150 ms），再大会把颤音也抹平
+MAX_SMOOTH = 15
 
 # kind → 文件名。下载接口用 kind 做白名单，避免用户拼路径
 EXPORT_FILES: dict[str, str] = {
@@ -50,20 +56,56 @@ def _notes_payload(notes, bpm: float) -> dict:
     }
 
 
+def normalize_smooth(value: int) -> int:
+    """窗口必须是奇数且在 1..15 之间，用户传 4 就取 5。"""
+    clamped = max(1, min(MAX_SMOOTH, int(value)))
+    return clamped if clamped % 2 == 1 else clamped + 1
+
+
+def _prepare(root: Path, smooth: int) -> tuple[PitchCurve, list]:
+    """读 pitch.json → 去倍频跳变 → 按窗口平滑 → 切音符。
+
+    平滑在这里做一次，`segment` 内部就不再平滑（传 `smooth_window=1`），
+    否则会叠两层滤波，颤音被抹两次。
+    """
+    payload = json.loads((root / "features" / "pitch.json").read_text(encoding="utf-8"))
+    raw = PitchCurve.from_payload(payload)
+
+    # 先修倍频跳变：曲线突然跳八度再跳回来，会让切分多出一堆假音符。
+    # 中值滤波压不住这种大台阶，必须单独治。
+    f0 = fix_octave_jumps(raw.f0)
+    window = normalize_smooth(smooth)
+    if window > 1:
+        f0 = median_smooth(f0, window)
+
+    curve = PitchCurve(hop_sec=raw.hop_sec, f0=f0)
+    notes = segment(curve, SegmentParams(smooth_window=1))
+    return curve, notes
+
+
+def render_export(root: Path, kind: str, *, smooth: int = DEFAULT_SMOOTH, bpm: float = 120.0) -> bytes:
+    """按指定平滑度即时生成一个导出文件（不落盘，供下载接口参数化使用）。"""
+    curve, notes = _prepare(root, smooth)
+    if kind == "notes_midi":
+        return to_note_midi(notes, bpm=bpm)
+    if kind == "bend_midi":
+        return to_bend_midi(curve, notes, bpm=bpm)
+    if kind == "ustx":
+        return to_ustx(curve, notes, bpm=bpm).encode("utf-8")
+    raise ValueError(f"未知导出类型 {kind}")
+
+
 def write_exports(root: Path, *, bpm: float = 120.0) -> dict[str, str]:
-    """生成 `exports/` 下的三件产物，返回 ``{kind: 相对任务目录的路径}``。
+    """生成 `exports/` 下的三件产物（默认平滑度），返回 ``{kind: 相对路径}``。
 
     音高数据不存在时返回空字典——没有曲线就导不出音符。
+    用户改平滑度时走 `render_export`，不会覆盖这里的默认版本。
     """
     pitch_path = root / "features" / "pitch.json"
     if not pitch_path.exists():
         return {}
 
-    raw = PitchCurve.from_payload(json.loads(pitch_path.read_text(encoding="utf-8")))
-    # 先修倍频跳变：曲线突然跳八度再跳回来，会让切分多出一堆假音符。
-    # 中值滤波压不住这种大台阶，必须单独治。
-    curve = PitchCurve(hop_sec=raw.hop_sec, f0=fix_octave_jumps(raw.f0))
-    notes = segment(curve)
+    curve, notes = _prepare(root, DEFAULT_SMOOTH)
 
     features = root / "features"
     features.mkdir(parents=True, exist_ok=True)

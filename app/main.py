@@ -6,19 +6,22 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 import soundfile as sf
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app import config, media, orchestrator
 from app.errors import JobRejected, PitchMorphError, friendly_error
-from app.exports import EXPORT_FILES
+from app.exports import EXPORT_FILES, normalize_smooth, render_export
 from app.packaging import build_zip
 from app.jobs import registry
 from app.schemas import HealthOut, JobOut, ModelListOut, TierOut
@@ -259,7 +262,7 @@ def download_stem(job_id: str, stem: str) -> FileResponse:
 
 
 @app.get("/api/jobs/{job_id}/package/{kind}")
-def download_package(job_id: str, kind: str) -> FileResponse:
+def download_package(job_id: str, kind: str, smooth: int = 3) -> Response:
     """音轨与工程分开打包：它们用途不同，混在一起用户还得自己解压挑文件。"""
     root = config.job_dir(job_id)
     stem = _source_stem(job_id)
@@ -268,40 +271,59 @@ def download_package(job_id: str, kind: str) -> FileResponse:
         sources = [name for name in config.ALL_SOURCES if (root / "stems" / f"{name}.wav").exists()]
         entries = [(root / "stems" / f"{name}.wav", f"{stem}/{name}.wav") for name in sources]
         target = build_zip(root, "package_stems.zip", entries)
-        filename = f"{stem}_stems.zip"
-    elif kind == "project":
+        if target is None:
+            raise HTTPException(404, "还没有可打包的音轨")
+        return FileResponse(
+            target,
+            media_type="application/zip",
+            filename=f"{stem}_stems.zip",
+        )
+
+    if kind == "project":
+        if not (root / "features" / "pitch.json").exists():
+            raise HTTPException(404, "还没有可打包的工程文件（需要先完成音高提取）")
         arcs = {
             "notes_midi": f"{stem}/notes.mid",
             "bend_midi": f"{stem}/bend.mid",
             "ustx": f"{stem}/vocal.ustx",
         }
-        entries = [
-            (root / "exports" / name, arcs[key]) for key, name in EXPORT_FILES.items()
-        ]
-        target = build_zip(root, "package_project.zip", entries)
-        filename = f"{stem}_project.zip"
-    else:
-        raise HTTPException(404, "没有这种打包")
+        window = normalize_smooth(smooth)
+        # 工程文件很小，直接内存打包，才能带上平滑度参数
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+            for key, arc in arcs.items():
+                archive.writestr(arc, render_export(root, key, smooth=window))
+        name = f"{stem}_project.zip"
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"},
+        )
 
-    if target is None:
-        raise HTTPException(404, "还没有可打包的产物")
-    return FileResponse(target, media_type="application/zip", filename=filename)
+    raise HTTPException(404, "没有这种打包")
 
 
 @app.get("/api/jobs/{job_id}/exports/{kind}")
-def download_export(job_id: str, kind: str) -> FileResponse:
-    name = EXPORT_FILES.get(kind)
-    if name is None:
+def download_export(job_id: str, kind: str, smooth: int = 3) -> Response:
+    """按 `smooth` 即时生成，不读 exports/ 里的落盘版本。
+
+    平滑窗口是中值滤波帧数（1 = 关）。即时生成而不是缓存，是因为参数一变
+    就得重新算，而这一步本来就是毫秒级。
+    """
+    if kind not in EXPORT_FILES:
         raise HTTPException(404, "没有这种导出")
-    path = config.job_dir(job_id) / "exports" / name
-    if not path.exists():
+    root = config.job_dir(job_id)
+    if not (root / "features" / "pitch.json").exists():
         raise HTTPException(404, "这个导出还没生成（需要先完成音高提取）")
-    media_type = "audio/midi" if name.endswith(".mid") else "application/x-yaml"
+
+    data = render_export(root, kind, smooth=normalize_smooth(smooth))
     suffix = {"notes_midi": "_notes.mid", "bend_midi": "_bend.mid"}.get(kind, ".ustx")
-    return FileResponse(
-        path,
+    media_type = "audio/midi" if suffix.endswith(".mid") else "application/x-yaml"
+    name = f"{_source_stem(job_id)}{suffix}"
+    return Response(
+        content=data,
         media_type=media_type,
-        filename=f"{_source_stem(job_id)}{suffix}",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"},
     )
 
 
