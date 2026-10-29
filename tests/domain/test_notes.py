@@ -65,20 +65,17 @@ def test_segment_drops_short_fragment():
     assert [n.midi for n in notes] == [69, 69]
 
 
-def test_segment_merges_short_fragment_with_same_pitch():
-    # 4 帧（40 ms）碎片，音高与前段相差 85 音分（会被切成独立段）但仍落在同一个 MIDI 音上
-    # → 碎片应并入前一段，而不是自己变成一个音符
-    low = 440.0 * 2 ** (-40 / 1200)  # -40 音分，midi 69
-    high = 440.0 * 2 ** (45 / 1200)  # +45 音分，midi 69
+def test_segment_keeps_same_semitone_together():
+    # -40 → +45 音分（85 音分的抖动）仍落在同一个半音里，不该切成两个音符。
+    # 这是 v2.1 的改动：v2.0 按「相邻帧差 > 80」切，会把这种颤音判成换音。
+    low = 440.0 * 2 ** (-40 / 1200)
+    high = 440.0 * 2 ** (45 / 1200)
     values = _steady(low, 50) + _steady(high, 4) + _steady(low, 50)
     notes = segment(_curve(values))
-    assert len(notes) == 2
-    # 碎片并进了第一段：第一段时长延伸到碎片的结尾
+    assert len(notes) == 1
     assert notes[0].midi == 69
     assert notes[0].start_sec == pytest.approx(0.0)
-    assert notes[0].dur_sec == pytest.approx(0.54)
-    # 后面那段仍然是独立音符，且没有重叠
-    assert notes[1].start_sec == pytest.approx(0.54)
+    assert notes[0].dur_sec == pytest.approx(1.04)
 
 
 def test_segment_notes_do_not_overlap():
@@ -96,9 +93,8 @@ def test_segment_drops_out_of_range_midi():
 
 def test_segment_params_defaults():
     params = SegmentParams()
-    assert params.min_note_sec == 0.08
-    assert params.jump_cents == 80.0
-    assert params.smooth_window == 3
+    assert params.min_note_sec == 0.12
+    assert params.smooth_window == 5
 
 
 def test_segment_uses_jump_cents_to_split():
