@@ -1,0 +1,108 @@
+"""音高阶段：FCPE 对 `stems/vocals.wav` 逐帧取 F0，写 `features/pitch.json`。
+
+FCPE 用 NaN 表示无声（探针实测静音段 96/96 帧可区分），这里统一转成 JSON 的 null。
+**不能写 0**：0 Hz 在前端是合法低音，会画出一条贴着底边的假线。
+"""
+
+from __future__ import annotations
+
+import inspect
+import json
+import math
+import os
+import typing as tp
+from pathlib import Path
+
+from app import protocol
+
+SR = 16000
+HOP = 160
+HOP_SEC = HOP / SR
+MODEL_NAME = "fcpe"
+F0_MIN = 80.0
+F0_MAX = 1100.0
+
+
+def to_curve(values: tp.Iterable[tp.Any]) -> list[float | None]:
+    """F0 序列 → JSON 友好的曲线。NaN / 0 / 负数一律 None。
+
+    这是本模块唯一的语义转换，抽成纯函数以便脱离 torch 测试。
+    """
+    curve: list[float | None] = []
+    for value in values:
+        number = float(value)
+        curve.append(round(number, 3) if math.isfinite(number) and number > 0 else None)
+    return curve
+
+
+def _default_device() -> str:
+    import torch
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _load_mono_16k(path: Path):
+    import numpy as np
+    import soundfile as sf
+    import torch
+
+    data, rate = sf.read(str(path), dtype="float32", always_2d=True)
+    if data.size == 0:
+        raise ValueError("输入音频为空")
+
+    mono = torch.from_numpy(np.ascontiguousarray(data.mean(axis=1), dtype=np.float32))
+    if rate != SR:
+        import torchaudio
+
+        mono = torchaudio.functional.resample(mono, rate, SR)
+    return mono.unsqueeze(0), mono.shape[-1] / SR
+
+
+def _infer(model, wav):
+    """不同版本的 FCPE 签名不同，按实际参数筛。"""
+    try:
+        params = inspect.signature(model.infer).parameters
+    except (TypeError, ValueError):
+        return model.infer(wav, SR)
+
+    wanted = {"sr": SR, "f0_min": F0_MIN, "f0_max": F0_MAX}
+    return model.infer(wav, **{k: v for k, v in wanted.items() if k in params})
+
+
+def run(req: tp.Mapping[str, tp.Any]) -> dict[str, str]:
+    import torch
+    from torchfcpe import spawn_bundled_infer_model
+
+    src = Path(req["input"])
+    dst = Path(req["out"])
+    device = str(req.get("device") or _default_device())
+
+    protocol.progress(0.05, "加载 FCPE")
+    model = spawn_bundled_infer_model(device=device)
+
+    protocol.progress(0.2, "读取人声")
+    wav, seconds = _load_mono_16k(src)
+
+    protocol.progress(0.3, "提取音高")
+    with torch.no_grad():
+        raw = _infer(model, wav)
+    frames = raw.detach().cpu().reshape(-1).tolist()
+
+    # FCPE 会在尾部多补一两帧，按音频时长裁掉，保证时间轴对齐
+    curve = to_curve(frames[: int(round(seconds / HOP_SEC)) + 1])
+
+    protocol.progress(0.9, "写盘")
+    payload = {
+        "version": 1,
+        "model": MODEL_NAME,
+        "sample_rate": SR,
+        "hop_sec": round(HOP_SEC, 6),
+        "frames": len(curve),
+        "f0": curve,
+    }
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".part")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, dst)
+
+    return {"pitch": f"{dst.parent.name}/{dst.name}"}
