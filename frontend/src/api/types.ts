@@ -48,6 +48,14 @@ export interface Health {
   max_duration_sec: number
 }
 
+/** worker 实际用的提取参数，随 pitch.json 一起回来 */
+export interface PitchParams {
+  f0_min: number
+  f0_max: number
+  threshold: number
+  gap_ms: number
+}
+
 /** features/pitch.json 的形状。null = 无声，绝不是 0 Hz。 */
 export interface PitchCurve {
   version: number
@@ -56,6 +64,8 @@ export interface PitchCurve {
   hop_sec: number
   frames: number
   f0: (number | null)[]
+  /** 老任务没有这个字段 */
+  params?: PitchParams
 }
 
 export const ACTIVE_STAGES: readonly Stage[] = [

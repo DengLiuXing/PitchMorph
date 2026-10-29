@@ -234,7 +234,7 @@ onBeforeUnmount(() => {
       <!-- 音高是浮层，不挤压轨道：分辨率不够时轨道被压扁不符合直觉 -->
       <section
         v-if="showPitch && job.has_pitch"
-        class="absolute inset-x-4 bottom-3 z-10 h-[232px] overflow-hidden rounded-xl border border-white/[0.12] bg-ink-800/95 shadow-[0_28px_70px_-28px_rgba(0,0,0,0.95)] backdrop-blur-md animate-rise"
+        class="absolute inset-x-4 bottom-3 z-10 h-[252px] overflow-hidden rounded-xl border border-white/[0.12] bg-ink-800/95 shadow-[0_28px_70px_-28px_rgba(0,0,0,0.95)] backdrop-blur-md animate-rise"
       >
         <button
           type="button"

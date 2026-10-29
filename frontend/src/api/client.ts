@@ -53,6 +53,19 @@ export const api = {
 
   pitch: (id: string) => request<PitchCurve>(`/api/jobs/${id}/pitch`),
 
+  /** 换参数重跑音高，不重新分离。用来对比不同阈值 / 音域的效果 */
+  rerunPitch(id: string, params: Record<string, number>): Promise<Job> {
+    return request<Job>(
+      `/api/jobs/${id}/pitch`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      },
+      UPLOAD_TIMEOUT,
+    )
+  },
+
   /** 播放与下载共用同一批文件，/media 挂在 data/jobs 上 */
   mediaUrl(jobId: string, relative: string): string {
     return `/media/${jobId}/${relative}`
