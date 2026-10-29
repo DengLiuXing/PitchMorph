@@ -14,13 +14,17 @@ const props = defineProps<{
   volume: number
   muted: boolean
   soloed: boolean
+  /** 被 solo 挤掉或被静音，整轨变暗 */
+  dimmed: boolean
 }>()
 
 const emit = defineEmits<{
   (event: 'ready', payload: { name: string; element: HTMLAudioElement }): void
   (event: 'mute', name: string): void
   (event: 'solo', name: string): void
-  (event: 'seek', ratio: number): void
+  // scrub 只更新预览位置，commit 才真正改 currentTime —— 否则拖动时每帧都发 Range 请求
+  (event: 'scrub', ratio: number): void
+  (event: 'commit'): void
   (event: 'volume', payload: { name: string; value: number }): void
 }>()
 
@@ -79,20 +83,23 @@ function onPointerDown(event: PointerEvent): void {
   const element = event.currentTarget as HTMLElement
   element.setPointerCapture(event.pointerId)
   dragging = true
-  emit('seek', ratioAt(event))
+  emit('scrub', ratioAt(event))
 }
 
 function onPointerMove(event: PointerEvent): void {
   if (!dragging) return
-  emit('seek', ratioAt(event))
+  emit('scrub', ratioAt(event))
 }
 
 function onPointerUp(event: PointerEvent): void {
+  if (!dragging) return
   dragging = false
   const element = event.currentTarget as HTMLElement
   if (element.hasPointerCapture(event.pointerId)) {
     element.releasePointerCapture(event.pointerId)
   }
+  emit('scrub', ratioAt(event))
+  emit('commit')
 }
 
 function onVolume(event: Event): void {
@@ -116,7 +123,7 @@ watch(() => props.url, () => void draw())
 </script>
 
 <template>
-  <article class="track" :data-dimmed="muted && !soloed ? 'true' : 'false'">
+  <article class="track" :data-dimmed="dimmed ? 'true' : 'false'">
     <div class="track-head">
       <span class="track-name" :title="`${label} · 峰值 ${peakLabel} dB`">{{ label }}</span>
 

@@ -68,11 +68,13 @@ export const ACTIVE_STAGES: readonly Stage[] = [
 export const STEMS = ['drums', 'bass', 'other', 'vocals'] as const
 export type StemName = (typeof STEMS)[number]
 
-export const STEM_LABELS: Record<StemName, string> = {
+/** `input` 是「跳过分轨」任务里那条原始音频，不是 stem */
+export const STEM_LABELS: Record<string, string> = {
   drums: '鼓',
   bass: '贝斯',
   other: '其他',
   vocals: '人声',
+  input: '原始音频',
 }
 
 export function isActive(stage: Stage): boolean {

@@ -1,4 +1,4 @@
-import type { Health, Job, ModelList, PitchCurve, StemName } from './types'
+import type { Health, Job, ModelList, PitchCurve } from './types'
 
 const READ_TIMEOUT = 15_000
 // 300 MB 在慢盘上要几十秒，读接口的 15 s 不够
@@ -58,11 +58,14 @@ export const api = {
     return `/media/${jobId}/${relative}`
   },
 
-  stemUrl(jobId: string, stem: StemName): string {
+  stemUrl(jobId: string, stem: string): string {
+    // 跳过分轨的任务只有 input.wav，它在任务根目录而不是 stems/ 下
+    if (stem === 'input') return api.mediaUrl(jobId, 'input.wav')
     return api.mediaUrl(jobId, `stems/${stem}.wav`)
   },
 
-  downloadUrl(jobId: string, stem: StemName): string {
+  downloadUrl(jobId: string, stem: string): string {
+    if (stem === 'input') return api.mediaUrl(jobId, 'input.wav')
     return `/api/jobs/${jobId}/stems/${stem}`
   },
 

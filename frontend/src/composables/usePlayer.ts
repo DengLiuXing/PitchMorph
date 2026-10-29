@@ -26,7 +26,8 @@ export function usePlayer() {
   const duration = ref(0)
   const volumes = ref<Record<string, number>>({})
   const muted = ref<string[]>([])
-  const solo = ref<string | null>(null)
+  // 多选 solo：DAW 里 solo 是每轨独立开关，点第二轨不该取消第一轨
+  const solo = ref<string[]>([])
 
   let raf = 0
 
@@ -43,8 +44,9 @@ export function usePlayer() {
   }
 
   function applyGains(): void {
+    const soloing = solo.value.length > 0
     for (const [name, node] of nodes) {
-      const silenced = solo.value ? name !== solo.value : muted.value.includes(name)
+      const silenced = soloing ? !solo.value.includes(name) : muted.value.includes(name)
       const level = volumes.value[name] ?? 0.9
       node.gain.gain.value = silenced ? 0 : level
     }
@@ -132,7 +134,9 @@ export function usePlayer() {
   }
 
   function toggleSolo(name: string): void {
-    solo.value = solo.value === name ? null : name
+    solo.value = solo.value.includes(name)
+      ? solo.value.filter((item) => item !== name)
+      : [...solo.value, name]
     applyGains()
   }
 
@@ -149,7 +153,7 @@ export function usePlayer() {
     duration.value = 0
     volumes.value = {}
     muted.value = []
-    solo.value = null
+    solo.value = []
     void context.value?.close()
     context.value = null
   }

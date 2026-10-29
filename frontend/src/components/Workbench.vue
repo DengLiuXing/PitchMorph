@@ -3,8 +3,8 @@ import { Pause, Play, X } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
-import type { Job, StemName } from '@/api/types'
-import { STEMS, STEM_LABELS } from '@/api/types'
+import type { Job } from '@/api/types'
+import { STEM_LABELS } from '@/api/types'
 import ExportPanel from '@/components/ExportPanel.vue'
 import PitchView from '@/components/PitchView.vue'
 import TrackRow from '@/components/TrackRow.vue'
@@ -48,20 +48,38 @@ const showPitch = ref(false)
 
 let scrubbing = false
 
-const tracks = computed(() => {
-  // 「人声」档只落一条轨，按服务端返回的真实列表渲染，不能写死四条
-  const names = props.job.sources.length > 0 ? props.job.sources : [...STEMS]
-  return names.map((name) => ({
+const tracks = computed(() =>
+  // 按服务端返回的真实列表渲染：人声档只有一条，跳过分轨的也只有一条原始音频。
+  // 这里绝不能回退成四条 —— 那会渲染出三个 404 的空轨（改错过一次）。
+  props.job.sources.map((name) => ({
     name,
-    label: STEM_LABELS[name as StemName] ?? name,
-    url: api.stemUrl(props.job.id, name as StemName),
-    downloadUrl: api.downloadUrl(props.job.id, name as StemName),
+    label: STEM_LABELS[name] ?? name,
+    url: api.stemUrl(props.job.id, name),
+    downloadUrl: api.downloadUrl(props.job.id, name),
     downloadName: api.downloadName(props.job.filename, name),
-  }))
-})
+  })),
+)
 
 const ratio = computed(() => (duration.value > 0 ? Math.min(1, position.value / duration.value) : 0))
-const playheadX = computed(() => headOffset.value + ratio.value * waveWidth.value)
+
+// 拖动时只改预览位置，松手才真正 seek：每帧改 currentTime 会让每个 <audio>
+// 重新发 Range 请求，旧的被浏览器 abort，服务端就刷出一堆 ConnectionResetError
+const scrubRatio = ref<number | null>(null)
+const displayRatio = computed(() => scrubRatio.value ?? ratio.value)
+const playheadX = computed(() => headOffset.value + displayRatio.value * waveWidth.value)
+
+function isSilent(name: string): boolean {
+  return solo.value.length > 0 ? !solo.value.includes(name) : muted.value.includes(name)
+}
+
+function onScrub(value: number): void {
+  scrubRatio.value = value
+}
+
+function onCommit(): void {
+  if (scrubRatio.value !== null) seek(scrubRatio.value * duration.value)
+  scrubRatio.value = null
+}
 
 function measure(): void {
   const list = listRef.value
@@ -75,10 +93,6 @@ function measure(): void {
 
 function onReady(payload: { name: string; element: HTMLAudioElement }): void {
   attach(payload.name, payload.element)
-}
-
-function onSeekRatio(value: number): void {
-  seek(value * duration.value)
 }
 
 function onVolume(payload: { name: string; value: number }): void {
@@ -97,16 +111,19 @@ function onSeekDown(event: PointerEvent): void {
   const element = event.currentTarget as HTMLElement
   element.setPointerCapture(event.pointerId)
   scrubbing = true
-  onSeekRatio(seekRatio(event))
+  onScrub(seekRatio(event))
 }
 
 function onSeekMove(event: PointerEvent): void {
   if (!scrubbing) return
-  onSeekRatio(seekRatio(event))
+  onScrub(seekRatio(event))
 }
 
 function onSeekUp(event: PointerEvent): void {
+  if (!scrubbing) return
   scrubbing = false
+  onScrub(seekRatio(event))
+  onCommit()
   const element = event.currentTarget as HTMLElement
   if (element.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId)
 }
@@ -191,14 +208,16 @@ onBeforeUnmount(() => {
         :url="track.url"
         :download-url="track.downloadUrl"
         :download-name="track.downloadName"
-        :progress="ratio"
+        :progress="displayRatio"
         :volume="volumes[track.name] ?? 0.9"
         :muted="muted.includes(track.name)"
-        :soloed="solo === track.name"
+        :soloed="solo.includes(track.name)"
+        :dimmed="isSilent(track.name)"
         @ready="onReady"
         @mute="toggleMute"
         @solo="toggleSolo"
-        @seek="onSeekRatio"
+        @scrub="onScrub"
+        @commit="onCommit"
         @volume="onVolume"
       />
 
@@ -260,8 +279,8 @@ onBeforeUnmount(() => {
           @keydown.left.prevent="nudge(-5)"
           @keydown.right.prevent="nudge(5)"
         >
-          <div class="seek-fill" :style="{ width: `${ratio * 100}%` }" />
-          <div class="seek-knob" :style="{ left: `${ratio * 100}%` }" />
+          <div class="seek-fill" :style="{ width: `${displayRatio * 100}%` }" />
+          <div class="seek-knob" :style="{ left: `${displayRatio * 100}%` }" />
         </div>
 
         <span class="num w-12 text-right text-[11px] text-chalk-mute">
