@@ -320,6 +320,9 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
   <div class="flex h-full flex-col">
     <div class="flex flex-wrap items-center gap-3 px-6 py-2">
       <span class="text-[11px] uppercase tracking-[0.16em] text-chalk-mute">音高</span>
+      <span class="chip border-amber-line text-amber-bright" title="FCPE 单声部音高 + 启发式切分，断线与音符边界都不保证准确">
+        实验性
+      </span>
       <span class="num text-[11px] text-chalk-dim">
         {{ curve ? `${curve.frames} 帧 · hop ${curve.hop_sec}s` : '—' }}
       </span>

@@ -187,9 +187,10 @@ onBeforeUnmount(() => {
           class="btn cursor-pointer"
           :class="showPitch ? 'btn-primary' : ''"
           :aria-pressed="showPitch"
+          title="实验性：单声部音高提取 + 启发式音符切分"
           @click="showPitch = !showPitch"
         >
-          音高线
+          音高线 · 实验性
         </button>
         <ExportPanel :job="job" />
       </div>

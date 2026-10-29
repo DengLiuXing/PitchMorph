@@ -91,6 +91,9 @@ function packageHref(kind: 'stems' | 'project'): string {
 
         <div class="mb-2 flex items-center gap-2">
           <span class="text-[11px] uppercase tracking-[0.16em] text-chalk-mute">音高导出</span>
+          <span class="chip border-amber-line text-amber-bright" title="音符切分是启发式的，效果不及专门的音符级模型">
+            实验性
+          </span>
           <span
             v-if="!job.has_exports"
             class="text-[10.5px] text-chalk-mute"
