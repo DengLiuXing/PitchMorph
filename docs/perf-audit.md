@@ -1,5 +1,13 @@
 # 性能档案：分轨为什么慢，以及 GPU 与并行的取舍
 
+> ⚠️ **本文件全部数据来自 v1（ONNX Runtime + demucs-onnx），PitchMorph v2 已换成 PyTorch。**
+> 换栈后以下结论**不再适用**：arena 只增不减、`enable_mem_pattern`、`arena_extend_strategy`、
+> `cudnn_conv_algo_search`、会话常驻与 `release_sessions()`、显存 3.2 GB 的台阶、
+> `intra_op_num_threads` 扫描、92 字节 Identity 图探针。PyTorch 自带 CUDA 运行时，这一整套问题域消失。
+>
+> **仍然成立的两条**：① 单卡上多专家并发是负优化（吞吐不变、显存翻倍）；
+> ② 「95% 时间在逐块推理上，想快只能动推理」。v2 的实测数字见 `AGENTS.md` 的「当前阶段」。
+
 > 结论会变，数据不会。当前生效的结论在「现状」，实测数据按主题归在「数据」，
 > 试过并已否决的方向在「别再试」，还没做的在「待办」。动推理或并发相关代码前读这份，
 > 别把已经量过的假设重新量一遍。

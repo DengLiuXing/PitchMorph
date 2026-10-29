@@ -1,6 +1,19 @@
-# 下一阶段设计：PyTorch 双重心工具（分轨 + 音高 → MIDI）
+# PyTorch 双重心工具（分轨 + 音高 → MIDI）
 
-> 这是一份**待验证的设计**，不是已实现的说明。所有标了「待测」的数字都需要自己跑一遍。
+> **状态（2026-10-29）：本设计已实现并跑通。** 落地时被实测推翻了三处，读本文前先看下面这张表；
+> 其余章节保留原始论证，因为它解释了「为什么当初这么想」。
+
+## 落地时的四处修正
+
+| 原文说法 | 实测结果 |
+|---|---|
+| `torch==2.x.y+cu126` | **错**。本机 RTX 5060 Laptop 是 sm_120（Blackwell），cu126 的架构上限是 sm_90。必须用 **cu128**，见 `pyproject.toml` 的 `[tool.uv.sources]` |
+| `apply_model` 带 `callback`，进度与取消免费 | **错**。demucs 4.0.1 的签名里没有 `callback`。逐块进度只能从它内部 tqdm 写的 stderr 里桥接（`app/worker/separate.py` 的 `_ProgressBridge`） |
+| 保留「仅人声档」（1/4 算力） | **保留，但实现方式不同**。`htdemucs_ft` 的 `weights` 是对角阵（每个专家只管一个音源），只要人声时只跑 `models[3]` 即可拿到 1/4 算力。**不能取下 `models[0]`**——它负责 drums，其 vocals 权重为 0，除零会让输出削波到满量程 |
+| `demucs.api.Separator` | **不存在**。demucs 4.0.1 没有 `api.py`，用 `demucs.pretrained.get_model` + `demucs.apply.apply_model` |
+
+FCPE 探针实测：hop 0.0100 s、440 Hz 正弦中位 439.01 Hz（漂移 −0.99）、静音段 96/96 帧判为无声、显存峰值 84.9 MiB。
+
 > 前一个项目（ONNX 单轨分离）已挂起，它的价值是「哪些坑已经踩完」，不是「代码要照抄」。
 
 ---
