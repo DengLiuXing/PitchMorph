@@ -24,7 +24,7 @@ from app.errors import JobRejected, PitchMorphError, friendly_error
 from app.exports import EXPORT_FILES, normalize_smooth, render_export
 from app.packaging import build_zip
 from app.jobs import registry
-from app.schemas import HealthOut, JobOut, ModelListOut, TierOut
+from app.schemas import HealthOut, JobOut, ModelListOut, PitchParams, TierOut
 
 logger = logging.getLogger(__name__)
 
@@ -212,17 +212,23 @@ def cancel_job(job_id: str) -> JobOut:
 
 
 @app.post("/api/jobs/{job_id}/pitch", response_model=JobOut, status_code=202)
-def rerun_pitch(job_id: str) -> JobOut:
-    """只重跑音高：用已有的 stems/vocals.wav，不重新解码、不重新分离。"""
+def rerun_pitch(job_id: str, body: PitchParams | None = None) -> JobOut:
+    """用新的音高参数重跑，不重新解码、不重新分离。
+
+    参数调优靠它：换个 f0 范围或阈值再跑一遍，把两次曲线叠起来看。
+    """
     job = registry.get(job_id)
     if job is None:
         raise HTTPException(404, "任务不存在")
     if job.active:
         raise HTTPException(409, "任务正在进行中")
-    if not (config.job_dir(job_id) / "stems" / "vocals.wav").exists():
-        raise HTTPException(400, "这个任务没有 vocals.wav，请先跑一次分轨")
 
-    registry.submit(job, orchestrator.run_pitch_only)
+    root = config.job_dir(job_id)
+    if not (root / "stems" / "vocals.wav").exists() and not (root / "input.wav").exists():
+        raise HTTPException(400, "这个任务没有可分析的音频")
+
+    params = body.model_dump(exclude_none=True) if body else None
+    registry.submit(job, lambda target: orchestrator.run_pitch_only(target, params))
     return _out(registry.get(job_id) or job)
 
 

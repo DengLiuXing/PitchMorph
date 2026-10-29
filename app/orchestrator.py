@@ -99,20 +99,25 @@ def _export_stage(job: Job, root: Path) -> None:
         logger.warning("导出失败（音高与四轨保留）：%s", exc)
 
 
-def _pitch_stage(job: Job, root: Path, source: Path, *, base: float, span: float) -> None:
+def _pitch_stage(
+    job: Job,
+    root: Path,
+    source: Path,
+    *,
+    base: float,
+    span: float,
+    params: dict | None = None,
+) -> None:
     """对一个音频文件提音高，再生成派生文件。
 
     音高失败不毁掉已有产物：四轨已经能听了，原因留在日志里。
     """
     registry.update(job.id, stage=Stage.PITCH, frac=base, detail="音高")
+    request: dict = {"input": str(source), "out": str(root / "features" / "pitch.json")}
+    if params:
+        request.update(params)
     try:
-        _run_worker(
-            "pitch",
-            {"input": str(source), "out": str(root / "features" / "pitch.json")},
-            job,
-            base=base,
-            span=span,
-        )
+        _run_worker("pitch", request, job, base=base, span=span)
     except JobCanceled:
         raise
     except Exception as exc:
@@ -165,16 +170,17 @@ def run_pipeline(job: Job) -> None:
     _finish(job)
 
 
-def run_pitch_only(job: Job) -> None:
-    """对已有分轨的任务只重跑音高。
+def run_pitch_only(job: Job, params: dict | None = None) -> None:
+    """只重跑音高，用来对比不同参数的效果。
 
-    常见场景：几天前已经分好轨，今天只想换个音高参数再来一遍。
-    不重新解码、不重新分离、不碰 `stems/`。
+    不重新解码、不重新分离、不碰 `stems/`。有 stems 就用 vocals，
+    跳过分轨的任务则用 `input.wav`。
     """
     root = config.job_dir(job.id)
     vocals = root / "stems" / "vocals.wav"
-    if not vocals.exists():
-        raise RuntimeError("这个任务没有 vocals.wav，请先跑一次分轨")
+    source = vocals if vocals.exists() else root / "input.wav"
+    if not source.exists():
+        raise RuntimeError("这个任务没有可分析的音频")
 
-    _pitch_stage(job, root, vocals, base=0.05, span=0.9)
+    _pitch_stage(job, root, source, base=0.05, span=0.9, params=params)
     _finish(job)

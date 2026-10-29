@@ -27,6 +27,8 @@ F0_MAX = 1100.0
 GAP_MAX_SEC = 0.08
 GAP_MAX_SEMITONES = 2.5
 
+DEFAULT_THRESHOLD = 0.006
+
 
 def fill_gaps(
     curve: list[float | None],
@@ -114,14 +116,14 @@ def _load_mono_16k(path: Path):
     return mono.unsqueeze(0), mono.shape[-1] / SR
 
 
-def _infer(model, wav):
+def _infer(model, wav, *, f0_min: float, f0_max: float, threshold: float):
     """不同版本的 FCPE 签名不同，按实际参数筛。"""
     try:
         params = inspect.signature(model.infer).parameters
     except (TypeError, ValueError):
         return model.infer(wav, SR)
 
-    wanted = {"sr": SR, "f0_min": F0_MIN, "f0_max": F0_MAX}
+    wanted = {"sr": SR, "f0_min": f0_min, "f0_max": f0_max, "threshold": threshold}
     return model.infer(wav, **{k: v for k, v in wanted.items() if k in params})
 
 
@@ -133,6 +135,16 @@ def run(req: tp.Mapping[str, tp.Any]) -> dict[str, str]:
     dst = Path(req["out"])
     device = str(req.get("device") or _default_device())
 
+    # 参数全部可选，缺省即默认值。f0 范围收窄能减少倍频误判，
+    # 但超出范围的真音也会被丢掉 —— 这是要用户自己权衡的地方。
+    f0_min = float(req.get("f0_min") or F0_MIN)
+    f0_max = float(req.get("f0_max") or F0_MAX)
+    if f0_min >= f0_max:
+        raise ValueError(f"f0_min({f0_min}) 必须小于 f0_max({f0_max})")
+    threshold = float(req.get("threshold") or DEFAULT_THRESHOLD)
+    gap_raw = req.get("gap_ms")
+    gap_sec = GAP_MAX_SEC if gap_raw is None else max(0.0, float(gap_raw)) / 1000.0
+
     protocol.progress(0.05, "加载 FCPE")
     model = spawn_bundled_infer_model(device=device)
 
@@ -141,13 +153,14 @@ def run(req: tp.Mapping[str, tp.Any]) -> dict[str, str]:
 
     protocol.progress(0.3, "提取音高")
     with torch.no_grad():
-        raw = _infer(model, wav)
+        raw = _infer(model, wav, f0_min=f0_min, f0_max=f0_max, threshold=threshold)
     frames = raw.detach().cpu().reshape(-1).tolist()
 
     # FCPE 会在尾部多补一两帧，按音频时长裁掉，保证时间轴对齐
     curve = to_curve(frames[: int(round(seconds / HOP_SEC)) + 1])
-    # 补掉短洞，剩下的长静音保持 None（那是真的没在唱）
-    curve = fill_gaps(curve, HOP_SEC)
+    # 补掉短洞（gap_ms=0 时完全关闭），剩下的长静音保持 None
+    if gap_sec > 0:
+        curve = fill_gaps(curve, HOP_SEC, max_gap_sec=gap_sec)
 
     protocol.progress(0.9, "写盘")
     payload = {
@@ -156,6 +169,13 @@ def run(req: tp.Mapping[str, tp.Any]) -> dict[str, str]:
         "sample_rate": SR,
         "hop_sec": round(HOP_SEC, 6),
         "frames": len(curve),
+        # 参数快照：前端据此回显当前档位，重跑时也能沿用
+        "params": {
+            "f0_min": f0_min,
+            "f0_max": f0_max,
+            "threshold": threshold,
+            "gap_ms": round(gap_sec * 1000),
+        },
         "f0": curve,
     }
     dst.parent.mkdir(parents=True, exist_ok=True)

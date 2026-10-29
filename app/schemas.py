@@ -53,6 +53,15 @@ class JobOut(BaseModel):
         )
 
 
+class PitchParams(BaseModel):
+    """重跑音高时的可调项，缺省即用 worker 的默认值。"""
+
+    f0_min: float | None = None
+    f0_max: float | None = None
+    threshold: float | None = None
+    gap_ms: int | None = None
+
+
 class TierOut(BaseModel):
     id: str
     label: str
