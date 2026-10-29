@@ -85,6 +85,9 @@ def _flags(job_id: str) -> tuple[bool, bool, bool, list[str]]:
     has_exports = (root / "exports" / EXPORT_FILES["ustx"]).exists()
     # 「人声」档只有 vocals.wav，前端按真实存在的轨渲染，不要写死四条
     sources = [name for name in config.ALL_SOURCES if (root / "stems" / f"{name}.wav").exists()]
+    if not sources and (root / "input.wav").exists():
+        # 跳过分轨的任务：只有一条「原始音频」可播，别再假装有四轨
+        sources = ["input"]
     return has_pitch, has_stems, has_exports, sources
 
 

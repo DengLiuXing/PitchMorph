@@ -22,6 +22,62 @@ MODEL_NAME = "fcpe"
 F0_MIN = 80.0
 F0_MAX = 1100.0
 
+# 只补「短洞」：换气通常在 100 ms 以上，补它会造假；
+# 80 ms 以内的空洞多半是 FCPE 在气声/弱音上漏检。
+GAP_MAX_SEC = 0.08
+GAP_MAX_SEMITONES = 2.5
+
+
+def fill_gaps(
+    curve: list[float | None],
+    hop_sec: float,
+    *,
+    max_gap_sec: float = GAP_MAX_SEC,
+    max_jump_semitones: float = GAP_MAX_SEMITONES,
+) -> list[float | None]:
+    """把两侧都有音高、跨度很短的 None 段用对数插值补上。
+
+    音高线断得太碎时人眼无法判断走势，但盲目 `interp_uv` 会把真实换气也填平。
+    这里两头都设了闸：洞太长不补，两侧差超过 2.5 个半音也不补（补出来是假线）。
+    """
+    if not curve:
+        return curve
+
+    max_frames = max(1, int(round(max_gap_sec / hop_sec)))
+    result = list(curve)
+    index = 0
+
+    while index < len(result):
+        if result[index] is not None:
+            index += 1
+            continue
+
+        start = index
+        while index < len(result) and result[index] is None:
+            index += 1
+        end = index
+
+        # 首尾的静音不补：那多半是歌曲开头/结尾的空白
+        if start == 0 or end >= len(result):
+            continue
+        if end - start > max_frames:
+            continue
+
+        left = result[start - 1]
+        right = result[end]
+        if left is None or right is None or left <= 0 or right <= 0:
+            continue
+        if abs(12 * math.log2(right / left)) > max_jump_semitones:
+            continue
+
+        span = end - start
+        for offset in range(span):
+            ratio = (offset + 1) / (span + 1)
+            # 对数（频率比）插值，比线性更接近听觉
+            result[start + offset] = round(left * (right / left) ** ratio, 3)
+
+    return result
+
 
 def to_curve(values: tp.Iterable[tp.Any]) -> list[float | None]:
     """F0 序列 → JSON 友好的曲线。NaN / 0 / 负数一律 None。
@@ -90,6 +146,8 @@ def run(req: tp.Mapping[str, tp.Any]) -> dict[str, str]:
 
     # FCPE 会在尾部多补一两帧，按音频时长裁掉，保证时间轴对齐
     curve = to_curve(frames[: int(round(seconds / HOP_SEC)) + 1])
+    # 补掉短洞，剩下的长静音保持 None（那是真的没在唱）
+    curve = fill_gaps(curve, HOP_SEC)
 
     protocol.progress(0.9, "写盘")
     payload = {

@@ -39,6 +39,20 @@ class JobCanceled(Exception):
     """内部信号：用户取消了任务，不是错误。"""
 
 
+def _wav_duration(path: Path) -> float | None:
+    """只读 WAV 头部拿时长，给「重启后恢复的任务」补上 duration_sec。
+
+    不补的话历史任务的卡片上时长为空，用户没法判断这是哪一首。
+    """
+    try:
+        import soundfile as sf
+
+        info = sf.info(str(path))
+        return round(info.frames / info.samplerate, 2) if info.samplerate else None
+    except Exception:
+        return None
+
+
 @dataclass
 class Job:
     id: str
@@ -129,6 +143,7 @@ class JobRegistry:
                 stage=Stage.DONE,
                 frac=1.0,
                 detail="完成",
+                duration_sec=_wav_duration(entry / "input.wav"),
                 created_at=entry.stat().st_ctime,
                 finished_at=entry.stat().st_mtime,
             )
