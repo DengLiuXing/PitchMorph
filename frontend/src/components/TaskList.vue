@@ -85,6 +85,14 @@ const groups = computed(() => [
             <span class="w-28 truncate text-[11px] text-chalk-mute">
               {{ job.detail || STAGE_TEXT[job.stage] }}
             </span>
+            <button
+              type="button"
+              class="btn shrink-0 cursor-pointer"
+              title="终止任务并清理产物"
+              @click="emit('cancel', job)"
+            >
+              取消
+            </button>
           </div>
 
           <div v-else class="flex items-center justify-between gap-3">
@@ -107,14 +115,6 @@ const groups = computed(() => [
                 打开工作台
               </button>
 
-              <button
-                v-if="isActive(job.stage)"
-                type="button"
-                class="btn cursor-pointer"
-                @click="emit('cancel', job)"
-              >
-                取消
-              </button>
               <button
                 v-if="job.stage !== 'canceled' && !isActive(job.stage)"
                 type="button"

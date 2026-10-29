@@ -11,7 +11,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
-import type { PitchCurve } from '@/api/types'
+import type { OnsetTrack, PitchCurve } from '@/api/types'
 import { isActive } from '@/api/types'
 import { hzToNote } from '@/lib/format'
 
@@ -64,6 +64,14 @@ const canvas = ref<HTMLCanvasElement | null>(null)
 const curve = ref<PitchCurve | null>(null)
 /** 上一次的参数与曲线，叠成虚线做对比 */
 const previous = ref<PitchCurve | null>(null)
+/** 起音帧。老任务没有 onset.json 时为 null，不画标记 */
+const onsetTrack = ref<OnsetTrack | null>(null)
+/** 起音切分开关：关掉后重跑即回到「只用音高变化」的旧结果 */
+const splitOnsets = ref(true)
+const ONSET_OPTIONS = [
+  { id: 'on', label: '开', value: true },
+  { id: 'off', label: '关', value: false },
+]
 const error = ref('')
 const voicedRatio = ref(0)
 const smoothWindow = ref(3)
@@ -204,12 +212,29 @@ function draw(): void {
   box.first = Math.floor(box.from / box.hop)
   box.last = Math.min(data.frames - 1, Math.ceil((box.from + box.span) / box.hop))
 
+  const xOf = (frame: number): number => ((frame * box.hop - box.from) / box.span) * width
+
+  // 起音：细竖线，用青色与琥珀色播放头区分。关掉切分也照画 ——
+  // 它显示的是服务端这次实际检出的位置，开关只管要不要据此切音符。
+  const marks = onsetTrack.value
+  if (marks && marks.onsets.length > 0) {
+    painter.strokeStyle = 'rgba(45,212,191,0.5)'
+    painter.lineWidth = 1
+    painter.beginPath()
+    for (const frame of marks.onsets) {
+      if (frame < box.first || frame > box.last) continue
+      const x = Math.round(xOf(frame)) + 0.5
+      painter.moveTo(x, 0)
+      painter.lineTo(x, height)
+    }
+    painter.stroke()
+  }
+
   // 上一版先用灰虚线画在底层，再画当前版，重叠时能看出差在哪
   const before = previousDisplay.value
   if (before) stroke(painter, before, box, 'rgba(138,148,166,0.55)', true)
 
   // 竖条当填充：有声帧才画，静音段自然留白
-  const xOf = (frame: number): number => ((frame * box.hop - box.from) / box.span) * width
   painter.fillStyle = 'rgba(242,169,59,0.12)'
   for (let frame = box.first; frame <= box.last; frame += 1) {
     const value = values[frame]
@@ -246,8 +271,13 @@ function applyParams(data: PitchCurve): void {
 async function load(): Promise<void> {
   error.value = ''
   try {
-    const data = await api.pitch(props.jobId)
+    const [data, marks] = await Promise.all([
+      api.pitch(props.jobId),
+      // 老任务没有 onset.json：静默降级成「不画标记」，不能因此报错
+      api.onset(props.jobId).catch(() => null),
+    ])
     curve.value = data
+    onsetTrack.value = marks
     applyParams(data)
     const voiced = data.f0.filter((value) => value !== null).length
     voicedRatio.value = data.frames > 0 ? voiced / data.frames : 0
@@ -285,6 +315,7 @@ async function rerun(): Promise<void> {
       f0_max: range.max,
       threshold: threshold.value,
       gap_ms: gapMs.value,
+      onsets: splitOnsets.value,
     })
     await waitDone()
     previous.value = before
@@ -303,6 +334,7 @@ function onResize(): void {
 watch(() => props.jobId, () => {
   previous.value = null
   curve.value = null
+  onsetTrack.value = null
   void load()
 })
 watch(() => props.position, draw)
@@ -409,6 +441,29 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
         </button>
       </div>
 
+      <span class="text-[10.5px] text-chalk-mute">起音</span>
+      <div class="flex overflow-hidden rounded border border-white/[0.08]">
+        <button
+          v-for="item in ONSET_OPTIONS"
+          :key="item.id"
+          type="button"
+          class="cursor-pointer px-2 py-0.5 text-[10.5px] transition-colors duration-150"
+          :class="
+            splitOnsets === item.value
+              ? 'bg-amber/15 text-amber-bright'
+              : 'text-chalk-mute hover:text-chalk'
+          "
+          :title="
+            item.value
+              ? '按辅音起音把同音高的音节切开（青色竖线）'
+              : '只用音高变化切分，退回到旧行为'
+          "
+          @click="splitOnsets = item.value"
+        >
+          {{ item.label }}
+        </button>
+      </div>
+
       <button
         type="button"
         class="btn ml-auto !px-2.5 !py-0.5 !text-[10.5px]"
@@ -423,6 +478,14 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
       <span v-if="previous" class="flex items-center gap-1 text-[10px] text-chalk-mute">
         <span class="inline-block h-0 w-4 border-t border-dashed border-chalk-dim" />
         上一版
+      </span>
+
+      <span
+        v-if="onsetTrack && onsetTrack.onsets.length > 0"
+        class="flex items-center gap-1 text-[10px] text-chalk-mute"
+      >
+        <span class="inline-block h-2.5 w-[1.5px] bg-teal" />
+        起音 {{ onsetTrack.onsets.length }}
       </span>
     </div>
 

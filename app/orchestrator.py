@@ -12,6 +12,7 @@ import json
 import logging
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -52,6 +53,18 @@ def _run_worker(
         errors="replace",
         cwd=str(config.ROOT),
     )
+    # 兜底：`for line in proc.stdout` 是阻塞读，子进程安静下来（模型加载、
+    # 大块推理）时读不到新行，取消要等下一次输出才生效。这个线程只管一件事：
+    # 看到取消标志就 kill，管道随之关闭，下面的循环立刻结束并抛 JobCanceled。
+    def _watchdog() -> None:
+        while proc.poll() is None:
+            if job.cancel.is_set():
+                proc.kill()
+                return
+            time.sleep(0.1)
+
+    threading.Thread(target=_watchdog, daemon=True).start()
+
     artifacts: dict[str, str] = {}
     try:
         assert proc.stdin and proc.stdout

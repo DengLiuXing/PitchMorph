@@ -68,6 +68,21 @@ export interface PitchCurve {
   params?: PitchParams
 }
 
+/** 起音帧，与 PitchCurve.f0 同栅格（10 ms）。空数组 = 没启用或没检出。 */
+export interface OnsetTrack {
+  version: number
+  sample_rate: number
+  hop_sec: number
+  frames: number
+  /** 老任务或手工改坏时可能没有 */
+  params?: {
+    threshold: number
+    min_gap_ms: number
+    smooth_frames: number
+  }
+  onsets: number[]
+}
+
 export const ACTIVE_STAGES: readonly Stage[] = [
   'queued',
   'decoding',

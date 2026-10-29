@@ -1,4 +1,4 @@
-import type { Health, Job, ModelList, PitchCurve } from './types'
+import type { Health, Job, ModelList, OnsetTrack, PitchCurve } from './types'
 
 const READ_TIMEOUT = 15_000
 // 300 MB 在慢盘上要几十秒，读接口的 15 s 不够
@@ -53,8 +53,11 @@ export const api = {
 
   pitch: (id: string) => request<PitchCurve>(`/api/jobs/${id}/pitch`),
 
+  /** 起音帧。老任务没有这个文件会 404，调用方按「没有」处理 */
+  onset: (id: string) => request<OnsetTrack>(`/api/jobs/${id}/onset`),
+
   /** 换参数重跑音高，不重新分离。用来对比不同阈值 / 音域的效果 */
-  rerunPitch(id: string, params: Record<string, number>): Promise<Job> {
+  rerunPitch(id: string, params: Record<string, number | boolean>): Promise<Job> {
     return request<Job>(
       `/api/jobs/${id}/pitch`,
       {
