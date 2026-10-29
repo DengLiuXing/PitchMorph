@@ -23,8 +23,9 @@ from app.domain.notes import Note
 
 RESOLUTION = 480  # 只读常量，OpenUtau 侧恒为 480：480 tick = 一个四分音符
 
-# 曲线降密：10 ms 全量会让 3 分钟的工程膨胀到 ~720 KB
-DENSITY_SEC = 0.025
+# 曲线降密：10 ms 全量会让 3 分钟的工程膨胀到 ~720 KB，
+# 25 ms 又会让编辑器里挤满控制点（每个点都画一个小红点）。50 ms 是折中。
+DENSITY_SEC = 0.05
 
 
 def _quote(text: str) -> str:
@@ -76,8 +77,11 @@ def _note_block(note: Note, curve: PitchCurve, position: int, duration: int, den
         f"    duration: {duration}",
         f"    tone: {note.midi}",
         f"    lyric: {_quote('a')}",
-        # tuning 的单位是 1/100 半音，正好等于音分
-        f"    tuning: {int(round(note.cents_offset))}",
+        # tuning 必须为 0：OpenUtau 的 pitch 点 y 是相对 **AdjustedTone**
+        # （= tone + tuning/100）的，而 _pitch_points 已经按「f0 相对 note.midi」
+        # 算过了。两个都写就等于把音分偏移加了两遍，音符块和曲线会错开。
+        # 音符落在半音网格上、曲线还原真实音高，这个分工更清楚。
+        "    tuning: 0",
         "    pitch:",
         "      data:",
     ]
