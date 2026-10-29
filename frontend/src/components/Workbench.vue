@@ -27,6 +27,7 @@ const {
   muted,
   solo,
   attach,
+  pause,
   toggle,
   seek,
   nudge,
@@ -35,6 +36,9 @@ const {
   setVolume,
   reset,
 } = usePlayer()
+
+/** 返回队列时调用：视图只是 display:none，组件没卸载，不主动暂停就会继续出声 */
+defineExpose({ stop: pause })
 
 const listRef = ref<HTMLDivElement | null>(null)
 const seekRef = ref<HTMLDivElement | null>(null)

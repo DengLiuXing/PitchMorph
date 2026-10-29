@@ -16,6 +16,7 @@ const health = ref<Health | null>(null)
 const models = ref<ModelList | null>(null)
 const notice = ref('')
 const currentId = ref<string | null>(null)
+const workbench = ref<InstanceType<typeof Workbench> | null>(null)
 
 let timer: number | undefined
 
@@ -52,13 +53,7 @@ async function upload(payload: { files: File[]; tier: string; mode: string }): P
   await guard(loadJobs)
 }
 
-function rerunPitch(job: Job): void {
-  void guard(async () => {
-    const fresh = await api.rerunPitch(job.id)
-    jobs.value = jobs.value.map((item) => (item.id === fresh.id ? fresh : item))
-    await loadJobs()
-  })
-}
+
 
 function open(job: Job): void {
   currentId.value = job.id
@@ -66,6 +61,8 @@ function open(job: Job): void {
 }
 
 function back(): void {
+  // 视图切换只是 display:none，音频元素还在跑，必须主动停
+  workbench.value?.stop()
   view.value = 'home'
   void guard(loadJobs)
 }
@@ -125,13 +122,12 @@ onBeforeUnmount(() => window.clearTimeout(timer))
           @open="open"
           @cancel="cancel"
           @retry="retry"
-          @rerun="rerunPitch"
           @remove="remove"
         />
       </section>
 
       <section class="view" :class="{ 'is-active': view === 'workbench' }">
-        <Workbench v-if="current" :job="current" />
+        <Workbench ref="workbench" v-if="current" :job="current" />
         <div v-else class="px-6 py-16 text-center text-[12px] text-chalk-mute">
           任务已不在列表里，请回到队列重新选择。
         </div>

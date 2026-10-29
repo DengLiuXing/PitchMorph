@@ -18,17 +18,16 @@ const emit = defineEmits<{
   (event: 'open', job: Job): void
   (event: 'cancel', job: Job): void
   (event: 'retry', job: Job): void
-  (event: 'rerun', job: Job): void
   (event: 'remove', job: Job): void
 }>()
 
 const tier = ref(props.models?.default ?? 'vocals')
-const mode = ref<Mode>('full')
 
-const MODES: { id: Mode; label: string; hint: string }[] = [
-  { id: 'full', label: '分轨 + 音高', hint: '拆出人声轨，再对它提音高' },
-  { id: 'pitch', label: '只做音高', hint: '上传的已经是人声干声，跳过分轨' },
-]
+// 干声文件名特征：vocal / vocals / 人声 / 干声 / dry / acappella
+const DRY_PATTERN = /(vocal|人声|干声|dry|acap)/i
+
+const pending = ref<File[]>([])
+const askSkip = ref(false)
 
 // 档位列表是异步来的，到了再校正默认值（服务端把默认档排在第一位）
 watch(
@@ -39,7 +38,21 @@ watch(
 )
 
 function onPick(files: File[]): void {
-  emit('upload', { files, tier: tier.value, mode: mode.value })
+  // 只在「所有文件都像干声」时问一次，避免混选时频繁打断
+  if (files.length > 0 && files.every((file) => DRY_PATTERN.test(file.name))) {
+    pending.value = files
+    askSkip.value = true
+    return
+  }
+  emit('upload', { files, tier: tier.value, mode: 'full' })
+}
+
+function decideSkip(skip: boolean): void {
+  askSkip.value = false
+  const files = pending.value
+  pending.value = []
+  if (files.length === 0) return
+  emit('upload', { files, tier: tier.value, mode: skip ? 'pitch' : 'full' })
 }
 </script>
 
@@ -57,35 +70,21 @@ function onPick(files: File[]): void {
 
     <DropZone @pick="onPick" />
 
-    <div class="flex flex-wrap items-center gap-3">
-      <span class="text-[11px] uppercase tracking-[0.16em] text-chalk-mute">任务</span>
-      <div class="flex overflow-hidden rounded-lg border border-white/[0.08] bg-ink-800/60">
-        <button
-          v-for="item in MODES"
-          :key="item.id"
-          type="button"
-          class="cursor-pointer px-3.5 py-1.5 text-[12.5px] transition-colors duration-150"
-          :class="
-            mode === item.id
-              ? 'bg-amber/15 text-amber-bright'
-              : 'text-chalk-dim hover:bg-white/[0.03] hover:text-chalk'
-          "
-          :title="item.hint"
-          @click="mode = item.id"
-        >
-          {{ item.label }}
-        </button>
-      </div>
-      <span class="text-[11px] text-chalk-mute">
-        {{ MODES.find((item) => item.id === mode)?.hint }}
+    <div v-if="askSkip" class="panel flex flex-col gap-2.5 px-4 py-3">
+      <span class="text-[12.5px] leading-relaxed text-chalk">
+        文件名看起来已经是人声干声
+        <span class="num text-chalk-dim">（{{ pending.map((file) => file.name).join('、') }}）</span>。
+        跳过分轨会更快，但如果它其实是混音，伴奏会干扰基频判断。
       </span>
+      <div class="flex flex-wrap gap-2">
+        <button type="button" class="btn btn-primary" @click="decideSkip(true)">
+          是干声，跳过分轨
+        </button>
+        <button type="button" class="btn" @click="decideSkip(false)">还是分轨</button>
+      </div>
     </div>
 
-    <TierPicker v-if="mode === 'full'" v-model="tier" :models="models" />
-
-    <p v-else class="text-[11.5px] leading-relaxed text-chalk-mute">
-      跳过分轨，直接对上传的音频提取音高。请确保它是人声干声 —— 混音里的伴奏会干扰基频判断。
-    </p>
+    <TierPicker v-model="tier" :models="models" />
 
     <div
       v-if="notice"
@@ -100,7 +99,6 @@ function onPick(files: File[]): void {
       @open="emit('open', $event)"
       @cancel="emit('cancel', $event)"
       @retry="emit('retry', $event)"
-      @rerun="emit('rerun', $event)"
       @remove="emit('remove', $event)"
     />
   </div>

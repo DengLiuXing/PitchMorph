@@ -23,7 +23,7 @@ function hint(tier: Tier): string {
   <div class="flex flex-wrap items-center gap-3">
     <span class="text-[11px] uppercase tracking-[0.16em] text-chalk-mute">档位</span>
 
-    <div class="flex border border-white/[0.08] bg-ink-800/60">
+    <div class="flex overflow-hidden rounded-lg border border-white/[0.08] bg-ink-800/60">
       <button
         v-for="tier in models?.tiers ?? []"
         :key="tier.id"

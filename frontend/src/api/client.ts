@@ -45,10 +45,6 @@ export const api = {
     return request<Job>('/api/jobs', { method: 'POST', body: form }, UPLOAD_TIMEOUT)
   },
 
-  /** 只重跑音高：复用已有的 stems/vocals.wav，不重新分离 */
-  rerunPitch: (id: string) =>
-    request<Job>(`/api/jobs/${id}/pitch`, { method: 'POST' }, UPLOAD_TIMEOUT),
-
   cancel: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
 
   retry: (id: string) => request<Job>(`/api/jobs/${id}/retry`, { method: 'POST' }),

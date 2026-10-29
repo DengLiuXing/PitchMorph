@@ -26,13 +26,19 @@ function stemHref(stem: string): string {
   return `/api/jobs/${props.job.id}/stems/${stem}`
 }
 
+// 中值滤波窗口（帧）。1 = 关，窗口越大曲线越平，但颤音也会被抹掉
+const smooth = ref(3)
+const SMOOTH_OPTIONS = [1, 3, 5, 9]
+
 function exportHref(kind: string): string {
-  return `/api/jobs/${props.job.id}/exports/${kind}`
+  return `/api/jobs/${props.job.id}/exports/${kind}?smooth=${smooth.value}`
 }
 
 /** 音轨与工程分开打包：用途不同，混在一个包里还得手动挑 */
 function packageHref(kind: 'stems' | 'project'): string {
-  return `/api/jobs/${props.job.id}/package/${kind}`
+  const base = `/api/jobs/${props.job.id}/package/${kind}`
+  // 音轨是成品 WAV，与平滑度无关；工程包要带参数，MIDI/USTX 是按它即时生成的
+  return kind === 'stems' ? base : `${base}?smooth=${smooth.value}`
 }
 </script>
 
@@ -89,6 +95,25 @@ function packageHref(kind: 'stems' | 'project'): string {
             v-if="!job.has_exports"
             class="text-[10.5px] text-chalk-mute"
           >音高完成后可用</span>
+        </div>
+
+        <div class="mb-2 flex items-center gap-1.5">
+          <span class="text-[10.5px] text-chalk-mute">平滑</span>
+          <button
+            v-for="option in SMOOTH_OPTIONS"
+            :key="option"
+            type="button"
+            class="cursor-pointer rounded px-1.5 py-0.5 text-[10.5px] transition-colors duration-150"
+            :class="
+              smooth === option
+                ? 'bg-amber/20 text-amber-bright'
+                : 'text-chalk-mute hover:text-chalk'
+            "
+            :title="option === 1 ? '不平滑，保留原始曲线' : `中值滤波 ${option} 帧`"
+            @click="smooth = option"
+          >
+            {{ option === 1 ? '关' : `${option} 帧` }}
+          </button>
         </div>
 
         <ul class="flex flex-col gap-1.5">
