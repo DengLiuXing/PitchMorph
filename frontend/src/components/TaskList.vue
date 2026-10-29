@@ -12,6 +12,7 @@ const emit = defineEmits<{
   (event: 'open', job: Job): void
   (event: 'cancel', job: Job): void
   (event: 'retry', job: Job): void
+  (event: 'rerun', job: Job): void
   (event: 'remove', job: Job): void
 }>()
 
@@ -105,6 +106,15 @@ const groups = computed(() => [
                 @click="emit('open', job)"
               >
                 打开工作台
+              </button>
+              <button
+                v-if="job.has_stems && !isActive(job.stage)"
+                type="button"
+                class="btn cursor-pointer"
+                title="用已有的 vocals.wav 重跑音高，不重新分离"
+                @click="emit('rerun', job)"
+              >
+                重跑音高
               </button>
               <button
                 v-if="isActive(job.stage)"

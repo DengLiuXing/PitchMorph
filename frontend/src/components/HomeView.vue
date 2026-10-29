@@ -2,7 +2,7 @@
 import { AlertCircle } from 'lucide-vue-next'
 import { ref, watch } from 'vue'
 
-import type { Job, ModelList } from '@/api/types'
+import type { Job, Mode, ModelList } from '@/api/types'
 import DropZone from '@/components/DropZone.vue'
 import TaskList from '@/components/TaskList.vue'
 import TierPicker from '@/components/TierPicker.vue'
@@ -14,14 +14,21 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (event: 'upload', payload: { files: File[]; tier: string }): void
+  (event: 'upload', payload: { files: File[]; tier: string; mode: Mode }): void
   (event: 'open', job: Job): void
   (event: 'cancel', job: Job): void
   (event: 'retry', job: Job): void
+  (event: 'rerun', job: Job): void
   (event: 'remove', job: Job): void
 }>()
 
-const tier = ref(props.models?.default ?? 'fast')
+const tier = ref(props.models?.default ?? 'vocals')
+const mode = ref<Mode>('full')
+
+const MODES: { id: Mode; label: string; hint: string }[] = [
+  { id: 'full', label: '分轨 + 音高', hint: '拆出人声轨，再对它提音高' },
+  { id: 'pitch', label: '只做音高', hint: '上传的已经是人声干声，跳过分轨' },
+]
 
 // 档位列表是异步来的，到了再校正默认值（服务端把默认档排在第一位）
 watch(
@@ -32,7 +39,7 @@ watch(
 )
 
 function onPick(files: File[]): void {
-  emit('upload', { files, tier: tier.value })
+  emit('upload', { files, tier: tier.value, mode: mode.value })
 }
 </script>
 
@@ -50,7 +57,35 @@ function onPick(files: File[]): void {
 
     <DropZone @pick="onPick" />
 
-    <TierPicker v-model="tier" :models="models" />
+    <div class="flex flex-wrap items-center gap-3">
+      <span class="text-[11px] uppercase tracking-[0.16em] text-chalk-mute">任务</span>
+      <div class="flex overflow-hidden rounded-lg border border-white/[0.08] bg-ink-800/60">
+        <button
+          v-for="item in MODES"
+          :key="item.id"
+          type="button"
+          class="cursor-pointer px-3.5 py-1.5 text-[12.5px] transition-colors duration-150"
+          :class="
+            mode === item.id
+              ? 'bg-amber/15 text-amber-bright'
+              : 'text-chalk-dim hover:bg-white/[0.03] hover:text-chalk'
+          "
+          :title="item.hint"
+          @click="mode = item.id"
+        >
+          {{ item.label }}
+        </button>
+      </div>
+      <span class="text-[11px] text-chalk-mute">
+        {{ MODES.find((item) => item.id === mode)?.hint }}
+      </span>
+    </div>
+
+    <TierPicker v-if="mode === 'full'" v-model="tier" :models="models" />
+
+    <p v-else class="text-[11.5px] leading-relaxed text-chalk-mute">
+      跳过分轨，直接对上传的音频提取音高。请确保它是人声干声 —— 混音里的伴奏会干扰基频判断。
+    </p>
 
     <div
       v-if="notice"
@@ -65,6 +100,7 @@ function onPick(files: File[]): void {
       @open="emit('open', $event)"
       @cancel="emit('cancel', $event)"
       @retry="emit('retry', $event)"
+      @rerun="emit('rerun', $event)"
       @remove="emit('remove', $event)"
     />
   </div>

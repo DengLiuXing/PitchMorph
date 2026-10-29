@@ -9,10 +9,14 @@ export type Stage =
   | 'failed'
   | 'canceled'
 
+/** full = 分轨 + 音高；pitch = 上传的已经是干声，跳过分轨 */
+export type Mode = 'full' | 'pitch'
+
 export interface Job {
   id: string
   filename: string
   tier: string
+  mode: Mode
   stage: Stage
   progress: number
   detail: string

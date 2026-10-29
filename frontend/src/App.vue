@@ -40,16 +40,24 @@ async function guard(action: () => Promise<void>): Promise<void> {
   }
 }
 
-async function upload(payload: { files: File[]; tier: string }): Promise<void> {
+async function upload(payload: { files: File[]; tier: string; mode: string }): Promise<void> {
   notice.value = ''
   for (const file of payload.files) {
     // 串行上传：服务端本来就是单 worker 排队，并发只会撞限流
     await guard(async () => {
-      const job = await api.upload(file, payload.tier)
+      const job = await api.upload(file, payload.tier, payload.mode)
       jobs.value = [job, ...jobs.value]
     })
   }
   await guard(loadJobs)
+}
+
+function rerunPitch(job: Job): void {
+  void guard(async () => {
+    const fresh = await api.rerunPitch(job.id)
+    jobs.value = jobs.value.map((item) => (item.id === fresh.id ? fresh : item))
+    await loadJobs()
+  })
 }
 
 function open(job: Job): void {
@@ -117,6 +125,7 @@ onBeforeUnmount(() => window.clearTimeout(timer))
           @open="open"
           @cancel="cancel"
           @retry="retry"
+          @rerun="rerunPitch"
           @remove="remove"
         />
       </section>

@@ -37,12 +37,17 @@ export const api = {
 
   jobs: () => request<Job[]>('/api/jobs'),
 
-  upload(file: File, tier: string): Promise<Job> {
+  upload(file: File, tier: string, mode: string): Promise<Job> {
     const form = new FormData()
     form.append('file', file)
     form.append('tier', tier)
+    form.append('mode', mode)
     return request<Job>('/api/jobs', { method: 'POST', body: form }, UPLOAD_TIMEOUT)
   },
+
+  /** 只重跑音高：复用已有的 stems/vocals.wav，不重新分离 */
+  rerunPitch: (id: string) =>
+    request<Job>(`/api/jobs/${id}/pitch`, { method: 'POST' }, UPLOAD_TIMEOUT),
 
   cancel: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
 

@@ -5,7 +5,7 @@
  * 数据一次性取回（整首 f0），滑动时只在内存里切片，不再发请求。
  * 纵轴用对数映射：220–440 与 440–880 在听觉上等距，屏幕上也必须等距。
  */
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { PitchCurve } from '@/api/types'
@@ -29,10 +29,41 @@ const GRID: { hz: number; dashed: boolean }[] = [
   { hz: 880, dashed: false },
 ]
 
+const SMOOTH_OPTIONS = [0, 3, 5, 9]
+
 const canvas = ref<HTMLCanvasElement | null>(null)
 const curve = ref<PitchCurve | null>(null)
 const error = ref('')
 const voicedRatio = ref(0)
+const smoothWindow = ref(3)
+
+/**
+ * 中值滤波：压掉密集的小尖峰。
+ *
+ * 关键一点是 None 帧保持 None —— 换气位置不能被平滑填上，
+ * 否则静音段会长出一条假曲线，音符边界也会跟着漂。
+ */
+function medianFilter(values: (number | null)[], window: number): (number | null)[] {
+  if (window <= 1) return values
+  const half = Math.floor(window / 2)
+  return values.map((value, index) => {
+    if (value === null) return null
+    const neighbours: number[] = []
+    for (let offset = -half; offset <= half; offset += 1) {
+      const sample = values[index + offset]
+      if (sample !== undefined && sample !== null) neighbours.push(sample)
+    }
+    if (neighbours.length === 0) return null
+    neighbours.sort((a, b) => a - b)
+    return neighbours[Math.floor(neighbours.length / 2)]
+  })
+}
+
+const display = computed(() => {
+  const data = curve.value
+  if (!data) return null
+  return medianFilter(data.f0, smoothWindow.value)
+})
 
 function yOf(hz: number, height: number): number {
   const ratio = Math.log(hz / BOTTOM_HZ) / (Math.log(2) * OCTAVES)
@@ -74,7 +105,8 @@ function draw(): void {
     painter.fillText(`${hzToNote(hz)} · ${Math.round(hz)}`, 4, y - 3)
   })
 
-  if (!data) return
+  const values = display.value
+  if (!data || !values) return
 
   const hop = data.hop_sec
   const half = WINDOW_SEC / 2
@@ -85,9 +117,9 @@ function draw(): void {
   const xOf = (frame: number): number => ((frame * hop - from) / span) * width
 
   // 竖条当填充：有声帧才画，静音段自然留白
-  painter.fillStyle = 'rgba(240,169,22,0.12)'
+  painter.fillStyle = 'rgba(242,169,59,0.12)'
   for (let frame = first; frame <= last; frame += 1) {
-    const value = data.f0[frame]
+    const value = values[frame]
     if (value === null) continue
     const x = xOf(frame)
     const y = yOf(value, height)
@@ -96,12 +128,12 @@ function draw(): void {
 
   // 描边：None 处断开，不能 lineTo(0)，否则会画出一条贴着底边的假线
   painter.beginPath()
-  painter.strokeStyle = '#F0A916'
+  painter.strokeStyle = '#F2A93B'
   painter.lineWidth = 2
   painter.lineJoin = 'round'
   let pen = false
   for (let frame = first; frame <= last; frame += 1) {
-    const value = data.f0[frame]
+    const value = values[frame]
     if (value === null) {
       pen = false
       continue
@@ -145,6 +177,7 @@ function onResize(): void {
 
 watch(() => props.jobId, () => void load())
 watch(() => props.position, draw)
+watch(smoothWindow, draw)
 
 onMounted(() => {
   void load()
@@ -166,6 +199,25 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
       </span>
       <span class="num text-[11px] text-chalk-mute">220–880 Hz · 窗口 {{ WINDOW_SEC }}s</span>
       <span v-if="error" class="text-[11px] text-red-400">{{ error }}</span>
+
+      <div class="ml-auto flex items-center gap-1">
+        <span class="text-[10.5px] text-chalk-mute">平滑</span>
+        <button
+          v-for="option in SMOOTH_OPTIONS"
+          :key="option"
+          type="button"
+          class="cursor-pointer rounded px-1.5 py-0.5 text-[10.5px] transition-colors duration-150"
+          :class="
+            smoothWindow === option
+              ? 'bg-amber/20 text-amber-bright'
+              : 'text-chalk-mute hover:text-chalk'
+          "
+          :title="option === 0 ? '显示原始曲线' : `中值滤波 ${option} 帧`"
+          @click="smoothWindow = option"
+        >
+          {{ option === 0 ? '关' : `${option} 帧` }}
+        </button>
+      </div>
     </div>
 
     <canvas ref="canvas" class="block h-[168px] w-full" />
