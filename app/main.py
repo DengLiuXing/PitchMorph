@@ -43,6 +43,11 @@ async def _reaper() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     config.JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    # 任务表在内存，重启就空；但产物和 meta.json 还在磁盘上。
+    # 不恢复的话，「几天前分好轨、今天回来做音高」这种用法根本用不了。
+    restored = registry.restore()
+    if restored:
+        logger.info("从磁盘恢复 %d 个历史任务", restored)
     task = asyncio.create_task(_reaper())
     logger.info("PitchMorph 就绪，产物目录 %s", config.JOBS_DIR)
     try:
@@ -127,12 +132,15 @@ def _inspect(path: Path) -> tuple[float | None, bool]:
 async def create_job(
     file: UploadFile = File(...),
     tier: str = Form(config.DEFAULT_TIER),
+    mode: str = Form(config.DEFAULT_MODE),
 ) -> JobOut:
     if tier not in config.TIERS:
         raise HTTPException(400, f"未知档位 {tier}，可选 {'/'.join(config.TIERS)}")
+    if mode not in config.MODES:
+        raise HTTPException(400, f"未知模式 {mode}，可选 {'/'.join(config.MODES)}")
 
     name = Path(file.filename or "未命名").name
-    job = registry.create(name, tier)
+    job = registry.create(name, tier, mode)
     dst = config.job_dir(job.id) / f"source{Path(name).suffix.lower()}"
 
     try:
@@ -147,7 +155,7 @@ async def create_job(
         registry.update(job.id, duration_sec=duration)
         # 落盘一份源文件名：下载时的文件名靠它，不依赖内存任务表
         (config.job_dir(job.id) / "meta.json").write_text(
-            json.dumps({"filename": name, "tier": tier}, ensure_ascii=False),
+            json.dumps({"filename": name, "tier": tier, "mode": mode}, ensure_ascii=False),
             encoding="utf-8",
         )
     except (JobRejected, PitchMorphError) as exc:
@@ -195,6 +203,21 @@ def cancel_job(job_id: str) -> JobOut:
     if job is None:
         raise HTTPException(404, "任务不存在")
     return _out(job)
+
+
+@app.post("/api/jobs/{job_id}/pitch", response_model=JobOut, status_code=202)
+def rerun_pitch(job_id: str) -> JobOut:
+    """只重跑音高：用已有的 stems/vocals.wav，不重新解码、不重新分离。"""
+    job = registry.get(job_id)
+    if job is None:
+        raise HTTPException(404, "任务不存在")
+    if job.active:
+        raise HTTPException(409, "任务正在进行中")
+    if not (config.job_dir(job_id) / "stems" / "vocals.wav").exists():
+        raise HTTPException(400, "这个任务没有 vocals.wav，请先跑一次分轨")
+
+    registry.submit(job, orchestrator.run_pitch_only)
+    return _out(registry.get(job_id) or job)
 
 
 @app.post("/api/jobs/{job_id}/retry", response_model=JobOut, status_code=202)

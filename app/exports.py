@@ -10,7 +10,13 @@ import json
 import os
 from pathlib import Path
 
-from app.domain import PitchCurve, segment, to_bend_midi, to_note_midi
+from app.domain import (
+    PitchCurve,
+    fix_octave_jumps,
+    segment,
+    to_bend_midi,
+    to_note_midi,
+)
 from app.domain.ustx import to_ustx
 
 # kind → 文件名。下载接口用 kind 做白名单，避免用户拼路径
@@ -53,7 +59,10 @@ def write_exports(root: Path, *, bpm: float = 120.0) -> dict[str, str]:
     if not pitch_path.exists():
         return {}
 
-    curve = PitchCurve.from_payload(json.loads(pitch_path.read_text(encoding="utf-8")))
+    raw = PitchCurve.from_payload(json.loads(pitch_path.read_text(encoding="utf-8")))
+    # 先修倍频跳变：曲线突然跳八度再跳回来，会让切分多出一堆假音符。
+    # 中值滤波压不住这种大台阶，必须单独治。
+    curve = PitchCurve(hop_sec=raw.hop_sec, f0=fix_octave_jumps(raw.f0))
     notes = segment(curve)
 
     features = root / "features"

@@ -15,8 +15,14 @@ STATIC_DIR: Final = ROOT / "app" / "static"
 SAMPLE_RATE: Final = 44100
 MAX_UPLOAD_BYTES: Final = 300 * 1024 * 1024
 MAX_DURATION_SEC: Final = 12 * 60
-TTL_HOURS: Final = 24
+# 产物保留 7 天：常见用法是「几天前分离开好轨，今天回来做音高」，
+# 24 小时会把这种用法直接掐死。磁盘靠 TTL 清理兜底。
+TTL_HOURS: Final = 7 * 24
 QUEUE_LIMIT: Final = 3
+
+# 任务模式：full = 分轨 + 音高；pitch = 只对上传的干声提音高（跳过分离）
+MODES: Final[tuple[str, ...]] = ("full", "pitch")
+DEFAULT_MODE: Final = "full"
 
 ALL_SOURCES: Final[tuple[str, ...]] = ("drums", "bass", "other", "vocals")
 

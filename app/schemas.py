@@ -11,6 +11,7 @@ class JobOut(BaseModel):
     id: str
     filename: str
     tier: str
+    mode: str
     stage: str
     progress: int
     detail: str
@@ -37,6 +38,7 @@ class JobOut(BaseModel):
             id=job.id,
             filename=job.filename,
             tier=job.tier,
+            mode=job.mode,
             stage=job.stage.value,
             progress=job.progress,
             detail=job.detail,

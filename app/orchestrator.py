@@ -88,49 +88,7 @@ def _run_worker(
     return artifacts
 
 
-def run_pipeline(job: Job) -> None:
-    root = config.job_dir(job.id)
-
-    registry.update(job.id, stage=Stage.DECODING, frac=0.02, detail="解码")
-    duration = media.decode_to_wav(_source_file(root), root / "input.wav")
-    registry.update(job.id, duration_sec=duration, frac=0.05)
-
-    _check_cancel(job)
-    registry.update(job.id, stage=Stage.SEPARATING, detail="分轨")
-    _run_worker(
-        "separate",
-        {
-            "input": str(root / "input.wav"),
-            "stems_dir": str(root / "stems"),
-            "model": config.tier_model(job.tier),
-            "sources": list(config.tier_sources(job.tier)),
-        },
-        job,
-        base=0.05,
-        span=0.78,
-    )
-
-    _check_cancel(job)
-    registry.update(job.id, stage=Stage.PITCH, frac=0.84, detail="音高")
-    try:
-        _run_worker(
-            "pitch",
-            {
-                "input": str(root / "stems" / "vocals.wav"),
-                "out": str(root / "features" / "pitch.json"),
-            },
-            job,
-            base=0.84,
-            span=0.15,
-        )
-    except JobCanceled:
-        raise
-    except Exception as exc:
-        # 音高失败不毁掉分轨结果：四轨已经能听了，把原因留在日志里
-        logger.warning("音高阶段失败（分轨产物保留）：%s", exc)
-        registry.update(job.id, detail="音高失败，四轨可用")
-
-    _check_cancel(job)
+def _export_stage(job: Job, root: Path) -> None:
     registry.update(job.id, detail="生成 MIDI 与工程文件")
     try:
         # 纯函数 + 毫秒级 IO，不必再开子进程
@@ -140,6 +98,31 @@ def run_pipeline(job: Job) -> None:
     except Exception as exc:
         logger.warning("导出失败（音高与四轨保留）：%s", exc)
 
+
+def _pitch_stage(job: Job, root: Path, source: Path, *, base: float, span: float) -> None:
+    """对一个音频文件提音高，再生成派生文件。
+
+    音高失败不毁掉已有产物：四轨已经能听了，原因留在日志里。
+    """
+    registry.update(job.id, stage=Stage.PITCH, frac=base, detail="音高")
+    try:
+        _run_worker(
+            "pitch",
+            {"input": str(source), "out": str(root / "features" / "pitch.json")},
+            job,
+            base=base,
+            span=span,
+        )
+    except JobCanceled:
+        raise
+    except Exception as exc:
+        logger.warning("音高阶段失败（已有产物保留）：%s", exc)
+        registry.update(job.id, detail="音高失败")
+        return
+    _export_stage(job, root)
+
+
+def _finish(job: Job) -> None:
     registry.update(
         job.id,
         stage=Stage.DONE,
@@ -148,3 +131,50 @@ def run_pipeline(job: Job) -> None:
         finished_at=time.time(),
     )
     logger.info("任务 %s 完成，用时 %.1f s", job.id, job.elapsed_sec)
+
+
+def run_pipeline(job: Job) -> None:
+    root = config.job_dir(job.id)
+
+    registry.update(job.id, stage=Stage.DECODING, frac=0.02, detail="解码")
+    duration = media.decode_to_wav(_source_file(root), root / "input.wav")
+    registry.update(job.id, duration_sec=duration, frac=0.05)
+
+    if job.mode == "pitch":
+        # 上传的已经是人声干声：跳过分轨，直接对解码结果提音高
+        _check_cancel(job)
+        _pitch_stage(job, root, root / "input.wav", base=0.1, span=0.85)
+    else:
+        _check_cancel(job)
+        registry.update(job.id, stage=Stage.SEPARATING, detail="分轨")
+        _run_worker(
+            "separate",
+            {
+                "input": str(root / "input.wav"),
+                "stems_dir": str(root / "stems"),
+                "model": config.tier_model(job.tier),
+                "sources": list(config.tier_sources(job.tier)),
+            },
+            job,
+            base=0.05,
+            span=0.78,
+        )
+        _check_cancel(job)
+        _pitch_stage(job, root, root / "stems" / "vocals.wav", base=0.84, span=0.13)
+
+    _finish(job)
+
+
+def run_pitch_only(job: Job) -> None:
+    """对已有分轨的任务只重跑音高。
+
+    常见场景：几天前已经分好轨，今天只想换个音高参数再来一遍。
+    不重新解码、不重新分离、不碰 `stems/`。
+    """
+    root = config.job_dir(job.id)
+    vocals = root / "stems" / "vocals.wav"
+    if not vocals.exists():
+        raise RuntimeError("这个任务没有 vocals.wav，请先跑一次分轨")
+
+    _pitch_stage(job, root, vocals, base=0.05, span=0.9)
+    _finish(job)

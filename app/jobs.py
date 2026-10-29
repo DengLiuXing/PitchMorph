@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import threading
 import time
@@ -43,6 +44,7 @@ class Job:
     id: str
     filename: str
     tier: str
+    mode: str = "full"  # full = 分轨 + 音高；pitch = 跳过分轨直接提音高
     stage: Stage = Stage.QUEUED
     frac: float = 0.0
     detail: str = "排队中"
@@ -74,21 +76,66 @@ class JobRegistry:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self._pending = 0
+        self._queued: set[str] = set()  # 哪些任务占着队列名额（create 出来的）
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pitchmorph")
 
     # ---- 生命周期 -------------------------------------------------
 
-    def create(self, filename: str, tier: str) -> Job:
+    def create(self, filename: str, tier: str, mode: str = "full") -> Job:
         with self._lock:
             if self._pending >= config.QUEUE_LIMIT:
                 raise JobRejected(
                     f"已有 {self._pending} 个任务在排队（上限 {config.QUEUE_LIMIT}），等一个跑完再提交"
                 )
-            job = Job(id=uuid.uuid4().hex[:12], filename=filename, tier=tier)
+            job = Job(id=uuid.uuid4().hex[:12], filename=filename, tier=tier, mode=mode)
             self._jobs[job.id] = job
             self._pending += 1
+            self._queued.add(job.id)
         config.job_dir(job.id).mkdir(parents=True, exist_ok=True)
         return job
+
+    def restore(self) -> int:
+        """从磁盘恢复历史任务。
+
+        任务表在内存，进程重启就空了；但 `meta.json` 与产物还在。
+        不恢复的话，「几天前分离开好轨、今天回来做音高」这个用法根本用不了。
+        只恢复有产物的目录，中断留下的空目录直接跳过。
+        """
+        if not config.JOBS_DIR.exists():
+            return 0
+
+        restored = 0
+        for entry in config.JOBS_DIR.iterdir():
+            if not entry.is_dir() or entry.name.startswith("_"):
+                continue
+            meta = entry / "meta.json"
+            if not meta.exists():
+                continue
+            try:
+                data = json.loads(meta.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+
+            has_stems = (entry / "stems" / "vocals.wav").exists()
+            has_pitch = (entry / "features" / "pitch.json").exists()
+            if not has_stems and not has_pitch:
+                continue  # 中断的残留，交给 TTL 清理
+
+            job = Job(
+                id=entry.name,
+                filename=data.get("filename") or entry.name,
+                tier=data.get("tier") or config.DEFAULT_TIER,
+                mode=data.get("mode") or "full",
+                stage=Stage.DONE,
+                frac=1.0,
+                detail="完成",
+                created_at=entry.stat().st_ctime,
+                finished_at=entry.stat().st_mtime,
+            )
+            with self._lock:
+                self._jobs[job.id] = job
+            restored += 1
+        return restored
 
     def submit(self, job: Job, runner: Callable[[Job], None]) -> None:
         self._executor.submit(self._run, runner, job)
@@ -105,7 +152,10 @@ class JobRegistry:
             self._finish(job.id, Stage.FAILED, friendly_error(exc), clean=True)
         finally:
             with self._lock:
-                self._pending = max(0, self._pending - 1)
+                # 只有 create 出来的任务占队列名额；对历史任务「只重跑音高」不该减别人的额度
+                if job.id in self._queued:
+                    self._queued.discard(job.id)
+                    self._pending = max(0, self._pending - 1)
 
     def _finish(self, job_id: str, stage: Stage, detail: str, *, clean: bool = False) -> None:
         if clean:
