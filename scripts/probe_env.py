@@ -112,7 +112,7 @@ def probe_fcpe(use_cuda: bool) -> None:
     try:
         import torchfcpe
     except Exception as exc:
-        _skip("torchfcpe", f"未安装或 import 失败（{exc}），可回落 rmvpe-onnx")
+        _skip("torchfcpe", f"未安装或 import 失败（{exc}），音高阶段会直接报错")
         return
 
     _line("torchfcpe", getattr(torchfcpe, "__version__", "unknown"))
@@ -172,7 +172,11 @@ def probe_fcpe(use_cuda: bool) -> None:
 
 
 def probe_demucs() -> None:
-    """只查签名，不下载权重（htdemucs 约 660 MB）。"""
+    """只查签名，不下载权重（htdemucs 约 660 MB）。
+
+    v2 不手写分块：进度靠 `progress=True` 让 demucs 自己打 tqdm，再把 stderr 桥接成
+    协议事件。所以这里验的是 `progress` 在不在 —— `callback` 从来就没存在过。
+    """
     try:
         import demucs
         import demucs.apply
@@ -187,10 +191,10 @@ def probe_demucs() -> None:
         _fail("apply_model signature", exc)
         return
 
-    if "callback" in params:
-        _ok("apply_model callback", "有，逐块进度与取消不用自己写")
+    if "progress" in params:
+        _ok("apply_model progress", "有，tqdm 进度可桥接成协议事件")
     else:
-        _fail("apply_model callback", f"没有，实际参数：{list(params)}")
+        _fail("apply_model progress", f"没有，实际参数：{list(params)}")
 
 
 def main() -> int:

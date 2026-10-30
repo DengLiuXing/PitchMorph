@@ -17,6 +17,11 @@ from pathlib import Path
 
 import httpx
 
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from app import config  # noqa: E402
+
 ACTIVE = {"queued", "decoding", "separating", "pitch"}
 
 
@@ -24,7 +29,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="HTTP 链路冒烟")
     parser.add_argument("input", type=Path)
     parser.add_argument("--base", default="http://127.0.0.1:8000")
-    parser.add_argument("--tier", default="fast", choices=["fast", "quality"])
+    parser.add_argument("--tier", default=config.DEFAULT_TIER, choices=sorted(config.TIERS))
     args = parser.parse_args()
 
     if not args.input.exists():
@@ -77,7 +82,7 @@ def main() -> int:
 
         print(f"完成，用时 {current['elapsed_sec']} s，时长 {current['duration_sec']} s")
 
-        for stem in ("drums", "bass", "other", "vocals"):
+        for stem in config.tier_sources(args.tier):
             url = f"/media/{job_id}/stems/{stem}.wav"
             head = client.head(url)
             print(f"  {stem:<7} /media → {head.status_code}")
