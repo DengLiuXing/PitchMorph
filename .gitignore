@@ -1,20 +1,15 @@
-.venv/
-data/
+# 权重与素材：体积大、许可各异，不入库
+models/
 samples/
-temp-dev/
+
+# 依赖与构建产物
+.venv/
+node_modules/
+dist/
 __pycache__/
-*.py[cod]
-.uv-cache/
+*.pyc
+*.part
 
-# GAME 权重（48–190 MB，按 release 下载，见 app/worker/game/VENDOR.md）。
-# vendored 源码入库，权重不入库。
-app/worker/game/weights/
-
-# Frontend toolchain. app/static is deliberately NOT ignored: it holds the
-# built bundle FastAPI serves, and it must ship with the repo.
-frontend/node_modules/
-frontend/dist/
-
-# Editor and assistant state
-.vscode/
-.codebuddy/
+# 任务产物与临时目录
+data/
+temp-dev/
