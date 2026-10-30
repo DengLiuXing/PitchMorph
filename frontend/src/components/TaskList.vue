@@ -15,6 +15,18 @@ const emit = defineEmits<{
   (event: 'remove', job: Job): void
 }>()
 
+const SCOPE_TEXT: Record<string, string> = {
+  separate: '只分离',
+  analyze: '只分析',
+  both: '分离 + 分析',
+}
+
+const TIER_TEXT: Record<string, string> = {
+  vocals: '人声',
+  fast: '四轨 · 快',
+  quality: '四轨 · 质量',
+}
+
 const groups = computed(() => [
   { key: 'active', title: '进行中', items: props.jobs.filter((job) => isActive(job.stage)) },
   { key: 'done', title: '已完成', items: props.jobs.filter((job) => job.stage === 'done') },
@@ -68,7 +80,14 @@ const groups = computed(() => [
             <span class="min-w-0 flex-1 truncate text-[12.5px] text-chalk" :title="job.filename">
               {{ job.filename }}
             </span>
-            <span class="chip shrink-0">{{ job.tier === 'quality' ? '质量' : '快速' }}</span>
+            <span class="chip shrink-0">{{ SCOPE_TEXT[job.scope] ?? job.scope }}</span>
+            <span
+              v-if="job.scope !== 'analyze'"
+              class="chip shrink-0"
+              :title="`分离档位：${job.tier}`"
+            >
+              {{ TIER_TEXT[job.tier] ?? job.tier }}
+            </span>
             <span v-if="job.duration_sec" class="num shrink-0 text-[11px] text-chalk-mute">
               {{ formatTime(job.duration_sec) }}
             </span>

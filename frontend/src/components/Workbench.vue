@@ -13,6 +13,8 @@ import { formatTime } from '@/lib/format'
 
 const props = defineProps<{ job: Job }>()
 
+const emit = defineEmits<{ (event: 'derive'): void }>()
+
 const TIER_TEXT: Record<string, string> = {
   vocals: '人声',
   fast: '四轨 · 快',
@@ -245,7 +247,7 @@ onBeforeUnmount(() => {
         >
           <X :size="14" />
         </button>
-        <PitchView :job-id="job.id" :position="position" />
+        <PitchView :job-id="job.id" :position="position" @derive="emit('derive')" />
       </section>
     </div>
 

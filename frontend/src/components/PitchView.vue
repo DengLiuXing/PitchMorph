@@ -11,14 +11,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
-import type { OnsetTrack, PitchCurve } from '@/api/types'
-import { isActive } from '@/api/types'
+import type { Job, OnsetTrack, PitchCurve } from '@/api/types'
 import { hzToNote } from '@/lib/format'
 
 const props = defineProps<{
   jobId: string
   position: number
 }>()
+
+const emit = defineEmits<{ (event: 'derive'): void }>()
 
 const BOTTOM_HZ = 220 // A3
 const OCTAVES = 2 // 顶部 880 Hz
@@ -33,32 +34,8 @@ const GRID: { hz: number; dashed: boolean }[] = [
   { hz: 880, dashed: false },
 ]
 
+/** 只影响画面：产物里的平滑由创建任务时定下的 `exports.smooth` 决定 */
 const SMOOTH_OPTIONS = [0, 3, 5, 9]
-
-// 音域收窄能减少倍频误判，但超出范围的真音也会丢 —— 这是要用户自己权衡的
-const RANGES = [
-  { id: 'full', label: '全音域', min: 80, max: 1100 },
-  { id: 'male', label: '男声', min: 75, max: 500 },
-  { id: 'female', label: '女声', min: 160, max: 1100 },
-]
-
-// 阈值是 FCPE 的浊音置信度门槛：低一点检出更多，但气声也会被当成音
-const THRESHOLDS = [
-  { id: 'loose', label: '灵敏', value: 0.002 },
-  { id: 'normal', label: '标准', value: 0.006 },
-  { id: 'strict', label: '严格', value: 0.02 },
-]
-
-// 补洞只补「两侧都有音高」且音高差 < 2.5 半音的空洞。
-// 档位给到 400 ms 是因为实测 80 ms 根本盖不住大部分断线 —— 那多半是清辅音与弱起。
-const GAPS = [
-  { id: 0, label: '关' },
-  { id: 40, label: '40' },
-  { id: 80, label: '80' },
-  { id: 150, label: '150' },
-  { id: 250, label: '250' },
-  { id: 400, label: '400' },
-]
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 const curve = ref<PitchCurve | null>(null)
@@ -66,20 +43,9 @@ const curve = ref<PitchCurve | null>(null)
 const previous = ref<PitchCurve | null>(null)
 /** 起音帧。老任务没有 onset.json 时为 null，不画标记 */
 const onsetTrack = ref<OnsetTrack | null>(null)
-/** 起音切分开关：关掉后重跑即回到「只用音高变化」的旧结果 */
-const splitOnsets = ref(true)
-const ONSET_OPTIONS = [
-  { id: 'on', label: '开', value: true },
-  { id: 'off', label: '关', value: false },
-]
 const error = ref('')
 const voicedRatio = ref(0)
 const smoothWindow = ref(3)
-const busy = ref(false)
-
-const rangeId = ref('full')
-const thresholdId = ref('normal')
-const gapMs = ref(80)
 
 const display = computed(() => {
   const data = curve.value
@@ -256,18 +222,6 @@ function draw(): void {
   painter.stroke()
 }
 
-function applyParams(data: PitchCurve): void {
-  const params = data.params
-  if (!params) return
-  const matched = RANGES.find(
-    (item) => item.min === params.f0_min && item.max === params.f0_max,
-  )
-  rangeId.value = matched?.id ?? 'full'
-  const threshold = THRESHOLDS.find((item) => Math.abs(item.value - params.threshold) < 1e-6)
-  thresholdId.value = threshold?.id ?? 'normal'
-  gapMs.value = params.gap_ms
-}
-
 async function load(): Promise<void> {
   error.value = ''
   try {
@@ -278,52 +232,11 @@ async function load(): Promise<void> {
     ])
     curve.value = data
     onsetTrack.value = marks
-    applyParams(data)
     const voiced = data.f0.filter((value) => value !== null).length
     voicedRatio.value = data.frames > 0 ? voiced / data.frames : 0
     draw()
   } catch (issue) {
     error.value = (issue as Error).message
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function waitDone(): Promise<void> {
-  // 一轮音高只要几秒；上限 2 分钟，超时就把错误抛给用户
-  for (let tick = 0; tick < 240; tick += 1) {
-    await sleep(500)
-    const list = await api.jobs()
-    const job = list.find((item) => item.id === props.jobId)
-    if (!job || !isActive(job.stage)) return
-  }
-  throw new Error('重跑超时，请检查服务端日志')
-}
-
-async function rerun(): Promise<void> {
-  if (busy.value) return
-  busy.value = true
-  error.value = ''
-  const before = curve.value
-  try {
-    const range = RANGES.find((item) => item.id === rangeId.value) ?? RANGES[0]
-    const threshold = THRESHOLDS.find((item) => item.id === thresholdId.value) ?? THRESHOLDS[1]
-    await api.rerunPitch(props.jobId, {
-      f0_min: range.min,
-      f0_max: range.max,
-      threshold: threshold.value,
-      gap_ms: gapMs.value,
-      onsets: splitOnsets.value,
-    })
-    await waitDone()
-    previous.value = before
-    await load()
-  } catch (issue) {
-    error.value = (issue as Error).message
-  } finally {
-    busy.value = false
   }
 }
 
@@ -364,7 +277,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
       <span v-if="error" class="text-[11px] text-red-400">{{ error }}</span>
 
       <div class="ml-auto flex items-center gap-1">
-        <span class="text-[10.5px] text-chalk-mute">平滑</span>
+        <span class="text-[10.5px] text-chalk-mute">显示平滑</span>
         <button
           v-for="option in SMOOTH_OPTIONS"
           :key="option"
@@ -384,95 +297,17 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
     </div>
 
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-6 pb-2">
-      <span class="text-[10.5px] text-chalk-mute">音域</span>
-      <div class="flex overflow-hidden rounded border border-white/[0.08]">
-        <button
-          v-for="item in RANGES"
-          :key="item.id"
-          type="button"
-          class="cursor-pointer px-2 py-0.5 text-[10.5px] transition-colors duration-150"
-          :class="
-            rangeId === item.id
-              ? 'bg-amber/15 text-amber-bright'
-              : 'text-chalk-mute hover:text-chalk'
-          "
-          :title="`${item.min}–${item.max} Hz`"
-          @click="rangeId = item.id"
-        >
-          {{ item.label }}
-        </button>
-      </div>
-
-      <span class="text-[10.5px] text-chalk-mute">阈值</span>
-      <div class="flex overflow-hidden rounded border border-white/[0.08]">
-        <button
-          v-for="item in THRESHOLDS"
-          :key="item.id"
-          type="button"
-          class="cursor-pointer px-2 py-0.5 text-[10.5px] transition-colors duration-150"
-          :class="
-            thresholdId === item.id
-              ? 'bg-amber/15 text-amber-bright'
-              : 'text-chalk-mute hover:text-chalk'
-          "
-          :title="`浊音置信度门槛 ${item.value}`"
-          @click="thresholdId = item.id"
-        >
-          {{ item.label }}
-        </button>
-      </div>
-
-      <span class="text-[10.5px] text-chalk-mute">补洞</span>
-      <div class="flex overflow-hidden rounded border border-white/[0.08]">
-        <button
-          v-for="item in GAPS"
-          :key="item.id"
-          type="button"
-          class="cursor-pointer px-2 py-0.5 text-[10.5px] transition-colors duration-150"
-          :class="
-            gapMs === item.id
-              ? 'bg-amber/15 text-amber-bright'
-              : 'text-chalk-mute hover:text-chalk'
-          "
-          :title="item.id === 0 ? '不补洞' : `补 ${item.id} ms 以内的断线`"
-          @click="gapMs = item.id"
-        >
-          {{ item.label }}
-        </button>
-      </div>
-
-      <span class="text-[10.5px] text-chalk-mute">起音</span>
-      <div class="flex overflow-hidden rounded border border-white/[0.08]">
-        <button
-          v-for="item in ONSET_OPTIONS"
-          :key="item.id"
-          type="button"
-          class="cursor-pointer px-2 py-0.5 text-[10.5px] transition-colors duration-150"
-          :class="
-            splitOnsets === item.value
-              ? 'bg-amber/15 text-amber-bright'
-              : 'text-chalk-mute hover:text-chalk'
-          "
-          :title="
-            item.value
-              ? '按辅音起音把同音高的音节切开（青色竖线）'
-              : '只用音高变化切分，退回到旧行为'
-          "
-          @click="splitOnsets = item.value"
-        >
-          {{ item.label }}
-        </button>
-      </div>
+      <span class="text-[11px] text-chalk-mute">
+        音高与音符的参数在创建任务时定，这里只能看结果
+      </span>
 
       <button
         type="button"
         class="btn ml-auto !px-2.5 !py-0.5 !text-[10.5px]"
-        :disabled="busy"
-        :class="{ 'opacity-50': busy }"
-        title="用当前参数重跑音高，不重新分离"
-        @click="rerun"
+        title="换参数需要新建任务：基于这个任务的人声轨再跑一遍"
+        @click="emit('derive')"
       >
-        {{ busy ? '重跑中…' : '重新提取' }}
+        换参数新建分析任务
       </button>
 
       <span v-if="previous" class="flex items-center gap-1 text-[10px] text-chalk-mute">

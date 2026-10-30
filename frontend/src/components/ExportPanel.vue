@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Download, Package, X } from 'lucide-vue-next'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import type { Job, StemName } from '@/api/types'
 import { STEMS, STEM_LABELS } from '@/api/types'
@@ -26,9 +26,17 @@ function stemHref(stem: string): string {
   return `/api/jobs/${props.job.id}/stems/${stem}`
 }
 
-// 中值滤波窗口（帧）。1 = 关，窗口越大曲线越平，但颤音也会被抹掉
-const smooth = ref(3)
+// 中值滤波窗口（帧）。1 = 关，窗口越大曲线越平，但颤音也会被抹掉。
+// 默认值取任务创建时定下的 exports.smooth：这里改只影响这一次下载。
 const SMOOTH_OPTIONS = [1, 3, 5, 9]
+const smooth = ref(props.job.params?.exports?.smooth ?? 3)
+
+watch(
+  () => props.job.id,
+  () => {
+    smooth.value = props.job.params?.exports?.smooth ?? 3
+  },
+)
 
 function exportHref(kind: string): string {
   return `/api/jobs/${props.job.id}/exports/${kind}?smooth=${smooth.value}`
@@ -101,7 +109,7 @@ function packageHref(kind: 'stems' | 'project'): string {
         </div>
 
         <div class="mb-2 flex items-center gap-1.5">
-          <span class="text-[10.5px] text-chalk-mute">平滑</span>
+          <span class="text-[10.5px] text-chalk-mute">曲线平滑</span>
           <button
             v-for="option in SMOOTH_OPTIONS"
             :key="option"
@@ -117,6 +125,9 @@ function packageHref(kind: 'stems' | 'project'): string {
           >
             {{ option === 1 ? '关' : `${option} 帧` }}
           </button>
+          <span class="text-[10px] text-chalk-mute">
+            只影响弯音曲线；音符来自 GAME 模型
+          </span>
         </div>
 
         <ul class="flex flex-col gap-1.5">

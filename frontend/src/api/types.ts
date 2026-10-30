@@ -5,18 +5,45 @@ export type Stage =
   | 'decoding'
   | 'separating'
   | 'pitch'
+  | 'notes'
   | 'done'
   | 'failed'
   | 'canceled'
 
-/** full = 分轨 + 音高；pitch = 上传的已经是干声，跳过分轨 */
-export type Mode = 'full' | 'pitch'
+/** separate = 只分离；analyze = 只分析音高与音符；both = 先分离再分析人声轨 */
+export type Scope = 'separate' | 'analyze' | 'both'
+
+/** 创建任务时给全的参数，按阶段分组；缺省即用后端默认值 */
+export interface JobParams {
+  separate?: { tier?: string }
+  pitch?: {
+    f0_min?: number
+    f0_max?: number
+    threshold?: number
+    gap_ms?: number
+    onsets?: boolean
+  }
+  notes?: {
+    /** GAME 体积：small（默认，48 MB）/ medium（190 MB，精度略高）/ large（349 MB，未实测） */
+    model?: string
+    nsteps?: number
+    seg_threshold?: number
+    seg_radius?: number
+    est_threshold?: number
+    language?: string
+  }
+  /** 导出平滑：中值滤波窗口（帧，奇数）。创建时定稿，导出面板可临时覆盖 */
+  exports?: { smooth?: number }
+}
 
 export interface Job {
   id: string
   filename: string
   tier: string
-  mode: Mode
+  scope: Scope
+  /** 派生分析任务的父任务；它的音频来自父任务的 vocals 轨 */
+  parent_id: string | null
+  params: JobParams
   stage: Stage
   progress: number
   detail: string
@@ -88,6 +115,7 @@ export const ACTIVE_STAGES: readonly Stage[] = [
   'decoding',
   'separating',
   'pitch',
+  'notes',
 ]
 
 export const STEMS = ['drums', 'bass', 'other', 'vocals'] as const

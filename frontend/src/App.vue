@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { Health, Job, ModelList } from '@/api/types'
+import type { Health, Job, JobParams, ModelList, Scope } from '@/api/types'
 import { isActive } from '@/api/types'
 import AppHeader from '@/components/AppHeader.vue'
 import HomeView from '@/components/HomeView.vue'
@@ -41,18 +41,46 @@ async function guard(action: () => Promise<void>): Promise<void> {
   }
 }
 
-async function upload(payload: { files: File[]; tier: string; mode: string }): Promise<void> {
+async function upload(payload: {
+  files: File[]
+  scope: Scope
+  params: JobParams
+}): Promise<void> {
   notice.value = ''
   for (const file of payload.files) {
     // 串行上传：服务端本来就是单 worker 排队，并发只会撞限流
     await guard(async () => {
-      const job = await api.upload(file, payload.tier, payload.mode)
+      const job = await api.upload(file, payload.scope, payload.params)
       jobs.value = [job, ...jobs.value]
     })
   }
   await guard(loadJobs)
 }
 
+/** 在工作台点「换参数新建分析任务」：回队列页，由弹窗收集参数 */
+const deriveParent = ref<string | null>(null)
+
+function startDerive(): void {
+  if (!currentId.value) return
+  deriveParent.value = currentId.value
+  back()
+}
+
+/** 弹窗确认后真正创建派生任务；原任务与产物一律不动 */
+async function derive(payload: { params: JobParams }): Promise<void> {
+  const parent = deriveParent.value
+  deriveParent.value = null
+  if (!parent) return
+  await guard(async () => {
+    const job = await api.analyze(parent, payload.params)
+    jobs.value = [job, ...jobs.value]
+  })
+  await guard(loadJobs)
+}
+
+function cancelDerive(): void {
+  deriveParent.value = null
+}
 
 
 function open(job: Job): void {
@@ -118,7 +146,10 @@ onBeforeUnmount(() => window.clearTimeout(timer))
           :jobs="jobs"
           :models="models"
           :notice="notice"
+          :derive-from="deriveParent"
           @upload="upload"
+          @derive="derive"
+          @cancel-derive="cancelDerive"
           @open="open"
           @cancel="cancel"
           @retry="retry"
@@ -127,7 +158,7 @@ onBeforeUnmount(() => window.clearTimeout(timer))
       </section>
 
       <section class="view" :class="{ 'is-active': view === 'workbench' }">
-        <Workbench ref="workbench" v-if="current" :job="current" />
+        <Workbench ref="workbench" v-if="current" :job="current" @derive="startDerive" />
         <div v-else class="px-6 py-16 text-center text-[12px] text-chalk-mute">
           任务已不在列表里，请回到队列重新选择。
         </div>

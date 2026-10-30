@@ -176,6 +176,22 @@
     background: linear-gradient(90deg, rgba(26, 32, 48, 0.85), rgba(18, 22, 31, 0.4));
   }
 
+  /* 参数面板里的输入框：与 .btn 同一套描边，避免浏览器默认样式把暗色主题冲掉 */
+  .field {
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--line-strong);
+    background: rgba(12, 15, 22, 0.6);
+    color: var(--text-1);
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 11.5px;
+  }
+
+  .field:focus-visible {
+    outline: 1px solid var(--amber);
+    outline-offset: 1px;
+  }
+
   .chip {
     @apply inline-flex items-center gap-1;
     padding: 1px 7px;

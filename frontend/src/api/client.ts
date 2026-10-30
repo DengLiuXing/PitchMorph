@@ -1,4 +1,4 @@
-import type { Health, Job, ModelList, OnsetTrack, PitchCurve } from './types'
+import type { Health, Job, JobParams, ModelList, OnsetTrack, PitchCurve, Scope } from './types'
 
 const READ_TIMEOUT = 15_000
 // 300 MB 在慢盘上要几十秒，读接口的 15 s 不够
@@ -35,14 +35,29 @@ export const api = {
 
   models: () => request<ModelList>('/api/models'),
 
-  jobs: () => request<Job[]>('/api/jobs'),
+  jobs: (scope?: Scope) =>
+    request<Job[]>(scope ? `/api/jobs?scope=${scope}` : '/api/jobs'),
 
-  upload(file: File, tier: string, mode: string): Promise<Job> {
+  /** 创建任务。参数一次给全，跑完即定稿；被拒绝时后端会回可读的中文原因 */
+  upload(file: File, scope: Scope, params: JobParams): Promise<Job> {
     const form = new FormData()
     form.append('file', file)
-    form.append('tier', tier)
-    form.append('mode', mode)
+    form.append('scope', scope)
+    form.append('params', JSON.stringify(params))
     return request<Job>('/api/jobs', { method: 'POST', body: form }, UPLOAD_TIMEOUT)
+  },
+
+  /** 用新参数基于已有任务的人声轨新建分析任务（原任务与产物不动） */
+  analyze(parentId: string, params: JobParams): Promise<Job> {
+    return request<Job>(
+      `/api/jobs/${parentId}/analyze`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      },
+      UPLOAD_TIMEOUT,
+    )
   },
 
   cancel: (id: string) => request<Job>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
@@ -55,19 +70,6 @@ export const api = {
 
   /** 起音帧。老任务没有这个文件会 404，调用方按「没有」处理 */
   onset: (id: string) => request<OnsetTrack>(`/api/jobs/${id}/onset`),
-
-  /** 换参数重跑音高，不重新分离。用来对比不同阈值 / 音域的效果 */
-  rerunPitch(id: string, params: Record<string, number | boolean>): Promise<Job> {
-    return request<Job>(
-      `/api/jobs/${id}/pitch`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
-      },
-      UPLOAD_TIMEOUT,
-    )
-  },
 
   /** 播放与下载共用同一批文件，/media 挂在 data/jobs 上 */
   mediaUrl(jobId: string, relative: string): string {

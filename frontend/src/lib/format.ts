@@ -25,6 +25,7 @@ export const STAGE_TEXT: Record<string, string> = {
   decoding: '解码中',
   separating: '分轨中',
   pitch: '提取音高',
+  notes: '音符边界',
   done: '已完成',
   failed: '失败',
   canceled: '已取消',
