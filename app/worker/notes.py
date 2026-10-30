@@ -43,6 +43,65 @@ def _model_path(request: dict) -> Path:
     return found
 
 
+class _CappedSlicer:
+    """在上游 Slicer 之上加一条硬约束：单片不超过 `max_sec`。
+
+    segmenter 的注意力是 O(T²)：188 s 整段要 5.6 GB，直接 OOM。上游只按静音切，
+    连续演唱的长歌可能切不出短片（实测 188 s 素材在 -40 dB 下最长片已 45.8 s），
+    所以这里兜底，并且**在能量最低处切**——按固定时长切会把长音从中间劈开。
+    """
+
+    def __init__(self, slicer, *, sr: int, max_sec: float) -> None:
+        self._slicer = slicer
+        # 上游 dataset 会直接读 `slicer.sr`，所以这里必须暴露同名字段
+        self.sr = sr
+        self._sr = sr
+        self._max = max(sr, int(max_sec * sr))
+
+    def slice(self, waveform):  # noqa: ANN001, ANN201  与上游 Slicer.slice 同签名
+        pieces = []
+        for chunk in self._slicer.slice(waveform):
+            pieces.extend(self._split(chunk))
+        return pieces
+
+    def _split(self, chunk: dict) -> list[dict]:
+        data = chunk["waveform"]
+        if len(data) <= self._max:
+            return [chunk]
+        pieces: list[dict] = []
+        start = 0
+        while len(data) - start > self._max:
+            # 只在窗口后 1/4 找切点：越靠后越少引入额外片段，同时留足上下文
+            search_from = start + int(self._max * 0.75)
+            cut = self._quietest_cut(data, search_from, start + self._max)
+            pieces.append(
+                {
+                    "waveform": data[start:cut],
+                    "offset": float(chunk["offset"]) + start / self._sr,
+                }
+            )
+            start = cut
+        pieces.append(
+            {
+                "waveform": data[start:],
+                "offset": float(chunk["offset"]) + start / self._sr,
+            }
+        )
+        return pieces
+
+    def _quietest_cut(self, data, search_from: int, search_to: int) -> int:
+        """在 [search_from, search_to) 里找 10 ms 内能量最低的帧边界。"""
+        import numpy as np
+
+        step = max(1, self._sr // 100)
+        best_index, best_energy = search_to, None
+        for index in range(search_from, max(search_from + 1, search_to - step), step):
+            energy = float(np.abs(data[index : index + step]).mean())
+            if best_energy is None or energy < best_energy:
+                best_energy, best_index = energy, index
+        return int(best_index)
+
+
 def _write_json(path: Path, payload: dict) -> None:
     """先 `.part` 再 `os.replace`：取消时不会留下半个 JSON 让导出层读崩。"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -94,10 +153,17 @@ def run(request: dict[str, Any]) -> dict[str, str]:
         language_id = 0
 
     sr = model.inference_config.features.audio_sample_rate
+    threshold = float(request.get("slice_threshold", config.GAME_SLICE_THRESHOLD_DB))
+    max_slice = float(request.get("max_slice_sec", config.GAME_MAX_SLICE_SEC))
+    slicer = _CappedSlicer(
+        Slicer(sr=sr, threshold=threshold, min_length=1000, min_interval=200, max_sil_kept=100),
+        sr=sr,
+        max_sec=max_slice,
+    )
     dataset = SlicedAudioFileIterableDataset(
         filemap={source.name: source},
         samplerate=sr,
-        slicer=Slicer(sr=sr, threshold=-40.0, min_length=1000, min_interval=200, max_sil_kept=100),
+        slicer=slicer,
         language=language_id,
     )
 
