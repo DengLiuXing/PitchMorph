@@ -17,8 +17,14 @@ type: project
 继续调参是在 2 个样本上过拟合，不是通解。
 
 **How to apply:**
-- 再评估音符切分/任何新模型，一律用 `scripts/compare_notes.py`（`--pitch features/pitch.json --ref <ustx>`），
-  先用 `app.worker.pitch` 阶段把参考 wav 的 pitch.json 跑出来。指标是 起音召回/精确 + 音高一致率。
+- 再评估音符切分/任何新模型，一律用 `scripts/compare_notes.py`（`--pitch features/pitch.json` 或
+  `--midi <模型导出的 mid>`，`--ref <ustx>`）。指标是 起音召回/精确 + 音高一致率。
 - 参考 USTX 是 GAME 的输出，不含 pitd 曲线，只有音符；比对只比音符，不比曲线。
+- **验收基准用 `科学MIMI`（188 s / 751 音符），不要用 `物凄`（12 s）。** 2026-10-30 M0 实测：
+  GAME 1.0.0 在 科学MIMI 上是 750 音符 / 起音召回 98.4% / 音高一致 97.3%（small），
+  medium 98.2%；而 物凄 只有 88%，且与模型体积无关——那份 USTX 大概率不是从 `stems/vocals.wav` 转写的。
+- **体积取 small**（48.5 MB / 峰值 305 MiB / 188 s 用 10.9 s），medium 只多 0.9% 精度但多 148 MB。
+- 上游 `numpy<2.0.0` 的钉子只影响训练/预处理：实测 numpy 2.4.6 下推理正常（97.8%），
+  不必降主环境 numpy。`matplotlib` 是 `inference/callbacks.py` 的顶层 import，必须装。
 - 现有的谱通量起音（`app/worker/onsets.py` + `features/onset.json`）保留：它产出的是帧号数组，
   GAME 的边界也可以走同一个出口，切分与前端不用重写。
