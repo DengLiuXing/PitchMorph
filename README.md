@@ -13,7 +13,7 @@
 需要 NVIDIA 显卡（本机是 RTX 5060 Laptop / sm_120）、[uv](https://docs.astral.sh/uv/)、Node 18+。
 
 ```powershell
-uv sync                      # Python 3.11 + torch cu128，约 2.5 GB
+uv sync                      # Python 3.12 + torch 2.11.0+cu128，约 2.5 GB
 cd frontend; npm install; npm run build; cd ..
 ```
 
