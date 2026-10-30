@@ -105,3 +105,52 @@ def test_bad_bpm_rejected():
     except ValueError:
         return
     raise AssertionError("bpm=0 应该抛 ValueError")
+
+
+# ---- 音高线：pitd 曲线 ---------------------------------------------------
+
+
+def test_pitd_curve_is_written():
+    payload = parse(to_ustx(flat_curve(440.0, 100), [Note(0.0, 1.0, 69, 0.0)]))
+    curves = payload["voice_parts"][0]["curves"]
+    # 默认 expSelectors 的第二位就是 pitd，OpenUtau 打开即可画出音高线
+    assert curves[0]["abbr"] == "pitd"
+    xs, ys = curves[0]["xs"], curves[0]["ys"]
+    assert len(xs) == len(ys) > 1
+    # x 必须是 5 tick 的整数倍（UCurve.interval），且严格递增
+    assert all(x % 5 == 0 for x in xs)
+    assert xs == sorted(set(xs))
+
+
+def test_pitd_curve_tracks_pitch():
+    # 音符 tone 69，第二段升到 70（+100 音分）
+    values = [440.0] * 50 + [440.0 * 2 ** (100 / 1200)] * 50
+    payload = parse(to_ustx(make_curve(values), [Note(0.0, 1.0, 69, 0.0)]))
+    ys = payload["voice_parts"][0]["curves"][0]["ys"]
+    assert ys[0] == 0
+    assert max(ys) >= 95  # 100 音分，允许 5 tick 对齐带来的误差
+
+
+def test_extreme_deviation_is_skipped():
+    # 音符 69 但实际高两个八度：那是 FCPE 的错帧，不能画进音高线
+    payload = parse(to_ustx(flat_curve(440.0 * 4, 100), [Note(0.0, 1.0, 69, 0.0)]))
+    assert payload["voice_parts"][0]["curves"] == []
+
+    # 正常范围内的偏移（80 音分）必须保留
+    values = [440.0] * 50 + [440.0 * 2 ** (80 / 1200)] * 50
+    ys = parse(to_ustx(make_curve(values), [Note(0.0, 1.0, 69, 0.0)]))["voice_parts"][0]["curves"][0]["ys"]
+    assert max(ys) >= 75
+
+
+def test_note_pitch_stays_flat():
+    # 音高细节只在 pitd 里；音符自带的 pitch 必须是平的，
+    # 否则渲染时 PITD 会叠在它上面，等于加两遍
+    values = [440.0] * 50 + [440.0 * 2 ** (100 / 1200)] * 50
+    payload = parse(to_ustx(make_curve(values), [Note(0.0, 1.0, 69, 0.0)]))
+    points = payload["voice_parts"][0]["notes"][0]["pitch"]["data"]
+    assert all(point["y"] == 0 for point in points)
+
+
+def test_empty_notes_write_empty_curves():
+    payload = parse(to_ustx(flat_curve(440.0, 50), []))
+    assert payload["voice_parts"][0]["curves"] == []

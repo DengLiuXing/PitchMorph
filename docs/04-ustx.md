@@ -91,6 +91,34 @@ pitch:
 - **本项目导出一律写 `snap_first: false`**。为 `true` 时 OpenUtau 会把首点的 `y` 改写成
   `(前一个音的音高 - 本音音高) * 10`，我们导入的真实曲线会被覆盖。
 - 官方新建音符的两个点是 `x = -40` 与 `x = 40`（滑音起点/长度），我们不用负值，从 0 开始。
+- **`note.pitch` 只画在「显示音高」打开时**（`NotesCanvas.cs:418` → `RenderPitchBend`），
+  而且一个音符一段、彼此断开。所以真实音高不写在这里，见 §6.1。
+
+## 6.1 音高线要走 `pitd` 曲线
+
+`UProject.expSelectors` 的默认前两位是 `dyn` / `pitd`（`UProject.cs:49`），
+OpenUtau 打开工程就画 `pitd` 这条曲线——这才是用户眼里的「音高线」。
+OpenUtau 自己的 GAME + RMVPE 转写也是把结果写进 `part.curves` 的 `pitd`（`Rmvpe.cs:190`）。
+
+```yaml
+  curves:
+  - abbr: pitd
+    xs: [0, 50, 100, 150]
+    ys: [-8, 3, 15, 4]
+```
+
+| 键 | 单位 | 依据 |
+|---|---|---|
+| `abbr` | 恒为 `pitd` | `Format.Ustx.PITD`，描述符范围 ±1200 音分 |
+| `xs` | **tick，相对 part 起点**，必须是 `UCurve.interval = 5` 的整数倍 | `UCurve.interval:10` |
+| `ys` | **音分，相对该点所在音符的 `tone`** | `RenderPhrase.cs:436` 在音符音高上叠加 PITD |
+
+两条硬约束：
+
+1. **不能与 `note.pitch` 同时写**。`RenderPhrase` 先取音符 pitch 再叠加 PITD，两边都写等于把曲线加两遍。
+   所以音符 pitch 固定成 `{x: 0, y: 0}` 与 `{x: 时长, y: 0}` 两个点。
+2. **偏离超过 ±250 音分的帧不采信**。切分已按半音切过，音符内部正常不会偏出两个半音；
+   剩下的都是 FCPE 的错帧（实测有掉到 −19 个半音的），画进去就是一根根竖线。
 
 ## 7. UVibrato
 
@@ -163,4 +191,5 @@ wave_parts: []
 - 落盘与命名：`app/exports.py`
 - 测试：`tests/domain/test_ustx.py`（用 `yaml.safe_load` 读回来断言结构，不比对字符串）
 
-曲线按 25 ms 降密写入：10 ms 全量会让 3 分钟工程膨胀到约 720 KB，而 OpenUtau 的插值精度远高于 25 ms。
+曲线按 50 ms 降密写入（`ustx.DENSITY_SEC`）：10 ms 全量会让 3 分钟工程膨胀到约 720 KB，
+而 OpenUtau 的插值精度远高于 50 ms。降密后 12 s 素材的 `pitd` 约 210 个点、全文约 13 KB。
