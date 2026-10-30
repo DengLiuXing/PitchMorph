@@ -6,6 +6,10 @@ __pycache__/
 *.py[cod]
 .uv-cache/
 
+# GAME 权重（48–190 MB，按 release 下载，见 app/worker/game/VENDOR.md）。
+# vendored 源码入库，权重不入库。
+app/worker/game/weights/
+
 # Frontend toolchain. app/static is deliberately NOT ignored: it holds the
 # built bundle FastAPI serves, and it must ship with the repo.
 frontend/node_modules/

@@ -22,6 +22,16 @@ dependencies = [
     "pretty_midi>=0.2.10",
     "pyyaml>=6.0",
     "torchfcpe>=0.0.4",
+    # GAME 推理路径（app/worker/game/_vendor）需要；只进子进程。
+    # 上游 requirements.txt 钉了 numpy<2.0.0，那是训练/预处理用的，实测推理在 numpy 2.4.6 下正常。
+    "lightning>=2.6",
+    "librosa",
+    "matplotlib",  # inference/callbacks.py 顶层 import
+    "loguru",
+    "omegaconf",
+    "mido",
+    "einops>=0.7.0",
+    "torchmetrics",
 ]
 
 [dependency-groups]
