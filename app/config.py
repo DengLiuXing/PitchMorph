@@ -20,9 +20,30 @@ MAX_DURATION_SEC: Final = 12 * 60
 TTL_HOURS: Final = 7 * 24
 QUEUE_LIMIT: Final = 3
 
-# 任务模式：full = 分轨 + 音高；pitch = 只对上传的干声提音高（跳过分离）
-MODES: Final[tuple[str, ...]] = ("full", "pitch")
-DEFAULT_MODE: Final = "full"
+# 任务范围：separate = 只分离；analyze = 只分析音高/音符；both = 先分离再分析人声轨。
+# 参数在创建时一次性给全，跑完即定稿；改参数 = 新建任务，不覆盖已有产物。
+SCOPES: Final[tuple[str, ...]] = ("separate", "analyze", "both")
+DEFAULT_SCOPE: Final = "both"
+
+# 旧 meta.json 里的 mode 映射（只用于恢复历史任务）
+_LEGACY_MODE_TO_SCOPE: Final[dict[str, str]] = {"full": "both", "pitch": "analyze"}
+
+# 「仅分析」的入参必须是人声干声。文件名里没有任何这类线索时，分轨没做就直接提音高，
+# 结果一定是一堆被伴奏干扰的假音符 —— 所以宁可在入队前拒绝并说清怎么做才有意义。
+DRY_MARKERS: Final[tuple[str, ...]] = ("vocal", "人声", "干声", "dry", "acap")
+
+
+def scope_from_meta(meta: dict) -> str:
+    """meta.json → scope。新记录直接读，旧记录按 `mode` 推断。"""
+    scope = meta.get("scope")
+    if scope in SCOPES:
+        return str(scope)
+    return _LEGACY_MODE_TO_SCOPE.get(str(meta.get("mode") or ""), DEFAULT_SCOPE)
+
+
+def looks_dry(filename: str) -> bool:
+    lowered = filename.lower()
+    return any(marker in lowered for marker in DRY_MARKERS)
 
 ALL_SOURCES: Final[tuple[str, ...]] = ("drums", "bass", "other", "vocals")
 
@@ -69,6 +90,30 @@ def tier_sources(tier: str) -> tuple[str, ...]:
 
 def job_dir(job_id: str) -> Path:
     return JOBS_DIR / job_id
+
+
+# GAME 权重：不入库（见 .gitignore 与 app/worker/game/VENDOR.md），解包成
+# `app/worker/game/weights/<体积>/model.pt`。找不到就跳过音符阶段、导出退回启发式。
+GAME_WEIGHTS_DIR: Final = ROOT / "app" / "worker" / "game" / "weights"
+GAME_DEFAULT_MODEL: Final = "GAME-1.0-small"
+
+
+# GAME 的体积名（release 里的 GAME-1.0-<size>.zip）。体积只影响精度与耗时，与分轨档位无关。
+GAME_SIZES: Final[tuple[str, ...]] = ("small", "medium", "large")
+
+
+def game_model_path(size: str | None = None) -> Path | None:
+    """按体积名找权重；不指定就用默认体积，再退化到任意一个已解包的。"""
+    if size:
+        if size not in GAME_SIZES:
+            raise ValueError(f"未知 GAME 体积 {size!r}，可选 {list(GAME_SIZES)}")
+        candidate = GAME_WEIGHTS_DIR / f"GAME-1.0-{size}" / "model.pt"
+        return candidate if candidate.exists() else None
+    preferred = GAME_WEIGHTS_DIR / GAME_DEFAULT_MODEL / "model.pt"
+    if preferred.exists():
+        return preferred
+    found = sorted(GAME_WEIGHTS_DIR.glob("*/model.pt"))
+    return found[0] if found else None
 
 
 def find_ffmpeg() -> str | None:

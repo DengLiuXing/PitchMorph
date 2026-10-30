@@ -15,7 +15,9 @@ from app.domain import (
     SegmentParams,
     fix_octave_jumps,
     median_smooth,
+    notes_from_spans,
     segment,
+    spans_from_segments,
     to_bend_midi,
     to_note_midi,
 )
@@ -88,11 +90,38 @@ def load_onsets(root: Path) -> list[int] | None:
     ]
 
 
+def _game_notes(root: Path, curve: PitchCurve) -> list | None:
+    """读 GAME 的 `features/notes_game.json` → 音符。缺失或损坏返回 None（走启发式）。
+
+    这是刻意做成「文件不存在就退回旧行为」的降级点：模型阶段失败不该让导出也失败，
+    而删掉一个文件就能一键回到启发式，方便对照。
+    """
+    path = root / "features" / "notes_game.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    segments = payload.get("segments")
+    if not isinstance(segments, list):
+        return None
+    spans = spans_from_segments(segments, curve.hop_sec, len(curve.f0))
+    return notes_from_spans(
+        curve,
+        [(lo, hi) for lo, hi, _ in spans],
+        [midi for _, _, midi in spans],
+    )
+
+
 def _prepare(root: Path, smooth: int) -> tuple[PitchCurve, list]:
     """读 pitch.json → 去倍频跳变 → 按窗口平滑 → 切音符。
 
     平滑在这里做一次，`segment` 内部就不再平滑（传 `smooth_window=1`），
     否则会叠两层滤波，颤音被抹两次。
+    有 `notes_game.json` 时边界用模型的，音高仍取我们曲线段内中位数（`docs/05-game.md` M1）。
     """
     payload = json.loads((root / "features" / "pitch.json").read_text(encoding="utf-8"))
     raw = PitchCurve.from_payload(payload)
@@ -105,6 +134,9 @@ def _prepare(root: Path, smooth: int) -> tuple[PitchCurve, list]:
         f0 = median_smooth(f0, window)
 
     curve = PitchCurve(hop_sec=raw.hop_sec, f0=f0)
+    game_notes = _game_notes(root, curve)
+    if game_notes is not None:
+        return curve, game_notes
     # 平滑不改变帧索引，所以起音帧号不需要任何偏移补偿
     notes = segment(curve, SegmentParams(smooth_window=1), load_onsets(root))
     return curve, notes
@@ -122,17 +154,19 @@ def render_export(root: Path, kind: str, *, smooth: int = DEFAULT_SMOOTH, bpm: f
     raise ValueError(f"未知导出类型 {kind}")
 
 
-def write_exports(root: Path, *, bpm: float = 120.0) -> dict[str, str]:
-    """生成 `exports/` 下的三件产物（默认平滑度），返回 ``{kind: 相对路径}``。
+def write_exports(
+    root: Path, *, bpm: float = 120.0, smooth: int = DEFAULT_SMOOTH
+) -> dict[str, str]:
+    """生成 `exports/` 下的三件产物，返回 ``{kind: 相对路径}``。
 
+    平滑度取任务创建时定的值（`JobParams.exports.smooth`），这里是那一批产物的定义。
     音高数据不存在时返回空字典——没有曲线就导不出音符。
-    用户改平滑度时走 `render_export`，不会覆盖这里的默认版本。
     """
     pitch_path = root / "features" / "pitch.json"
     if not pitch_path.exists():
         return {}
 
-    curve, notes = _prepare(root, DEFAULT_SMOOTH)
+    curve, notes = _prepare(root, normalize_smooth(smooth))
 
     features = root / "features"
     features.mkdir(parents=True, exist_ok=True)

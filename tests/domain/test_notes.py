@@ -7,7 +7,14 @@ import random
 import pytest
 
 from app.domain.curve import PitchCurve
-from app.domain.notes import Note, SegmentParams, segment
+from app.domain.notes import (
+    Note,
+    SegmentParams,
+    durations_from_boundaries,
+    notes_from_spans,
+    segment,
+    spans_from_segments,
+)
 
 HOP = 0.01
 
@@ -234,3 +241,130 @@ def test_segment_drops_isolated_short_span():
     # 孤立的 50 ms 有声段（气口、噪声）仍然整段丢掉，不去动别的音符
     values = [None] * 10 + _steady(440.0, 5) + [None] * 10
     assert segment(_curve(values)) == []
+
+
+# ---- GAME 边界 → 音符段长（docs/05 M1）---------------------------------
+
+
+def test_durations_empty():
+    assert durations_from_boundaries([]) == []
+
+
+def test_durations_without_boundaries_is_one_note():
+    assert durations_from_boundaries([False] * 100) == [100]
+
+
+def test_durations_boundary_at_zero_is_ignored():
+    # 第一个音符隐含从第 0 帧开始；上游用 -1 哨兵表达这一点，这里等价地忽略首帧
+    assert durations_from_boundaries([True] + [False] * 99) == [100]
+
+
+def test_durations_split_at_boundary():
+    flags = [False] * 50 + [True] + [False] * 49
+    assert durations_from_boundaries(flags) == [50, 50]
+
+
+def test_durations_allow_one_frame_note():
+    # 相邻两帧都标边界 → 中间那个音符只有 1 帧，不许丢（完全划分）
+    flags = [False] * 10 + [True, True] + [False] * 88
+    assert durations_from_boundaries(flags) == [10, 1, 89]
+
+
+def test_durations_tile_the_whole_length():
+    flags = [i in (7, 30, 31, 90) for i in range(120)]
+    durations = durations_from_boundaries(flags)
+    assert sum(durations) == 120
+    assert all(d > 0 for d in durations)
+
+
+# ---- 模型边界 + 我们的音高（docs/05 M1）---------------------------------
+
+
+def test_spans_single_span_takes_median_pitch():
+    notes = notes_from_spans(_curve(_steady(440.0, 100)), [(0, 99)])
+    assert len(notes) == 1
+    assert notes[0].midi == 69
+    assert notes[0].start_sec == pytest.approx(0.0)
+    assert notes[0].dur_sec == pytest.approx(1.0)
+
+
+def test_spans_keep_gaps_between_notes():
+    # 与 segment 不同：模型给的边界之间可以留缝，不做完全划分
+    notes = notes_from_spans(_curve(_steady(440.0, 120)), [(0, 49), (70, 119)])
+    assert len(notes) == 2
+    assert notes[0].dur_sec == pytest.approx(0.5)
+    assert notes[1].start_sec == pytest.approx(0.7)
+    assert notes[1].dur_sec == pytest.approx(0.5)
+
+
+def test_spans_ignore_none_frames_inside():
+    values: list[float | None] = [None] * 10 + _steady(523.25, 30)
+    notes = notes_from_spans(_curve(values), [(0, 39)])
+    assert len(notes) == 1
+    assert notes[0].midi == 72
+
+
+def test_spans_drop_span_without_voiced_frames():
+    notes = notes_from_spans(_curve([None] * 50), [(10, 20)])
+    assert notes == []
+
+
+def test_spans_clip_out_of_range_frames():
+    notes = notes_from_spans(_curve(_steady(440.0, 100)), [(-5, 500)])
+    assert len(notes) == 1
+    assert notes[0].start_sec == pytest.approx(0.0)
+    assert notes[0].dur_sec == pytest.approx(1.0)
+
+
+def test_spans_empty():
+    assert notes_from_spans(_curve(_steady(440.0, 10)), []) == []
+
+
+def test_segments_to_spans_is_half_open():
+    # 0.00 s 起、0.50 s 长、10 ms 一帧 → 帧 [0, 49]，不是 [0, 50]
+    spans = spans_from_segments([{"start_sec": 0.0, "dur_sec": 0.5}], 0.01, 100)
+    assert spans == [(0, 49, None)]
+
+
+def test_segments_to_spans_clips_and_skips():
+    segments = [
+        {"start_sec": 0.0, "dur_sec": 0.0},      # 零长：丢
+        {"start_sec": 0.0, "dur_sec": 9.0},      # 超出帧数：裁到末帧
+    ]
+    spans = spans_from_segments(segments, 0.01, 100)
+    assert spans == [(0, 99, None)]
+
+
+def test_segments_to_spans_carries_model_pitch():
+    spans = spans_from_segments([{"start_sec": 0.0, "dur_sec": 0.5, "midi": 69.4}], 0.01, 100)
+    assert spans == [(0, 49, 69.4)]
+
+
+def test_segments_to_spans_roundtrip_through_notes():
+    # 秒 → 帧 → 音符 的两步换算不能把起点挪走
+    spans = spans_from_segments([{"start_sec": 0.7, "dur_sec": 0.3}], HOP, 120)
+    notes = notes_from_spans(_curve(_steady(440.0, 120)), [(lo, hi) for lo, hi, _ in spans])
+    assert len(notes) == 1
+    assert notes[0].start_sec == pytest.approx(0.7)
+    assert notes[0].dur_sec == pytest.approx(0.3)
+
+
+# ---- 模型音高优先（docs/05-game.md M2）----------------------------------
+
+
+def test_spans_use_model_pitch_when_given():
+    # 曲线唱的是 440 Hz（69），模型说 71.4 → 听模型的，偏差按模型算
+    notes = notes_from_spans(_curve(_steady(440.0, 100)), [(0, 99)], [71.4])
+    assert len(notes) == 1
+    assert notes[0].midi == 71
+    assert notes[0].cents_offset == pytest.approx(40.0)
+
+
+def test_spans_fall_back_to_curve_when_pitch_missing():
+    notes = notes_from_spans(_curve(_steady(440.0, 100)), [(0, 99)], [None])
+    assert notes[0].midi == 69
+
+
+def test_spans_drop_out_of_range_model_pitch():
+    notes = notes_from_spans(_curve(_steady(440.0, 100)), [(0, 99)], [200.0])
+    assert notes == []

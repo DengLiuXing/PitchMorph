@@ -6,6 +6,12 @@
         --pitch data/jobs/<id>/features/pitch.json \
         --ref temp-dev/samples/openutau_official/物凄芙兰.ustx
 
+外部模型（GAME 等）导出的 MIDI 走 `--midi`，两个入口的口径与指标完全一致：
+
+    uv run python scripts/compare_notes.py \
+        --midi temp-dev/gamecheck/work/物凄_vocals.mid \
+        --ref temp-dev/samples/openutau_official/物凄芙兰.ustx
+
 只依赖 pytorch 之外的东西（yaml / 纯函数层），不加载任何模型。
 换模型（GAME 等）之后用同一条命令复测，指标才有可比性。
 
@@ -85,6 +91,25 @@ def load_ours(
     return [(note.start_sec, note.dur_sec, note.midi) for note in notes]
 
 
+def load_midi(path: Path) -> list[tuple[float, float, int]]:
+    """外部模型导出的 MIDI → [(start_sec, dur_sec, midi)]。
+
+    GAME 的 `infer.py extract` 只写整数音高、不写弯音，所以这里不做任何音高修正，
+    保持「模型说什么就是什么」——M0/M1/M2 的对照才可比。
+    """
+    import pretty_midi
+
+    midi = pretty_midi.PrettyMIDI(str(path))
+    notes = [
+        (float(note.start), float(note.end - note.start), int(note.pitch))
+        for instrument in midi.instruments
+        for note in instrument.notes
+        if note.end > note.start
+    ]
+    notes.sort()
+    return notes
+
+
 def onset_stats(
     ours: list[tuple[float, float, int]],
     ref: list[tuple[float, float, int]],
@@ -139,7 +164,9 @@ def describe(label: str, notes: list[tuple[float, float, int]]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="音符切分对照")
-    parser.add_argument("--pitch", required=True, type=Path, help="features/pitch.json")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--pitch", type=Path, help="features/pitch.json（走本工具的启发式切分）")
+    source.add_argument("--midi", type=Path, help="外部模型导出的 MIDI（GAME 等，直接比对）")
     parser.add_argument("--ref", required=True, type=Path, help="参考 USTX")
     parser.add_argument("--smooth", type=int, default=3, help="导出用的中值滤波窗口")
     parser.add_argument("--tolerance", type=float, default=0.05, help="起音匹配容差（秒）")
@@ -150,13 +177,16 @@ def main() -> int:
     args = parser.parse_args()
 
     ref, _ = load_reference(args.ref, args.part)
-    ours = load_ours(
-        args.pitch,
-        args.smooth,
-        not args.no_onsets,
-        min_note_sec=args.min_note,
-        tolerance_cents=args.cents,
-    )
+    if args.midi is not None:
+        ours = load_midi(args.midi)
+    else:
+        ours = load_ours(
+            args.pitch,
+            args.smooth,
+            not args.no_onsets,
+            min_note_sec=args.min_note,
+            tolerance_cents=args.cents,
+        )
 
     print(describe("参考 OpenUtau", ref))
     print(describe("本工具      ", ours))

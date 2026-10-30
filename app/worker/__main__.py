@@ -16,6 +16,7 @@ from app import protocol
 _STAGES = {
     "separate": "app.worker.separate",
     "pitch": "app.worker.pitch",
+    "notes": "app.worker.notes",  # GAME 边界，见 docs/05-game.md M1
 }
 
 

@@ -27,12 +27,13 @@ class Stage(str, Enum):
     DECODING = "decoding"
     SEPARATING = "separating"
     PITCH = "pitch"
+    NOTES = "notes"
     DONE = "done"
     FAILED = "failed"
     CANCELED = "canceled"
 
 
-ACTIVE = frozenset({Stage.QUEUED, Stage.DECODING, Stage.SEPARATING, Stage.PITCH})
+ACTIVE = frozenset({Stage.QUEUED, Stage.DECODING, Stage.SEPARATING, Stage.PITCH, Stage.NOTES})
 
 
 class JobCanceled(Exception):
@@ -58,7 +59,12 @@ class Job:
     id: str
     filename: str
     tier: str
-    mode: str = "full"  # full = 分轨 + 音高；pitch = 跳过分轨直接提音高
+    # separate = 只分离；analyze = 只分析音高/音符；both = 先分离再分析人声轨
+    scope: str = config.DEFAULT_SCOPE
+    # 创建时给全的参数（按阶段分组），跑完即定稿：产物永远能用自己的 meta 解释
+    params: dict = field(default_factory=dict)
+    # analyze 任务的音频来源：父任务的 vocals 轨
+    parent_id: str | None = None
     stage: Stage = Stage.QUEUED
     frac: float = 0.0
     detail: str = "排队中"
@@ -95,13 +101,27 @@ class JobRegistry:
 
     # ---- 生命周期 -------------------------------------------------
 
-    def create(self, filename: str, tier: str, mode: str = "full") -> Job:
+    def create(
+        self,
+        filename: str,
+        tier: str,
+        scope: str = config.DEFAULT_SCOPE,
+        params: dict | None = None,
+        parent_id: str | None = None,
+    ) -> Job:
         with self._lock:
             if self._pending >= config.QUEUE_LIMIT:
                 raise JobRejected(
                     f"已有 {self._pending} 个任务在排队（上限 {config.QUEUE_LIMIT}），等一个跑完再提交"
                 )
-            job = Job(id=uuid.uuid4().hex[:12], filename=filename, tier=tier, mode=mode)
+            job = Job(
+                id=uuid.uuid4().hex[:12],
+                filename=filename,
+                tier=tier,
+                scope=scope,
+                params=dict(params or {}),
+                parent_id=parent_id,
+            )
             self._jobs[job.id] = job
             self._pending += 1
             self._queued.add(job.id)
@@ -139,7 +159,10 @@ class JobRegistry:
                 id=entry.name,
                 filename=data.get("filename") or entry.name,
                 tier=data.get("tier") or config.DEFAULT_TIER,
-                mode=data.get("mode") or "full",
+                # 旧记录只有 mode（full/pitch），新记录只有 scope；这里统一成 scope
+                scope=config.scope_from_meta(data),
+                params=data.get("params") or {},
+                parent_id=data.get("parent_id"),
                 stage=Stage.DONE,
                 frac=1.0,
                 detail="完成",
@@ -210,9 +233,10 @@ class JobRegistry:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def snapshot(self) -> list[Job]:
+    def snapshot(self, scope: str | None = None) -> list[Job]:
         with self._lock:
-            return sorted(self._jobs.values(), key=lambda job: job.created_at, reverse=True)
+            jobs = [job for job in self._jobs.values() if scope is None or job.scope == scope]
+        return sorted(jobs, key=lambda job: job.created_at, reverse=True)
 
     def cancel(self, job_id: str) -> bool:
         job = self.get(job_id)
@@ -226,13 +250,21 @@ class JobRegistry:
         return True
 
     def retry(self, job_id: str) -> Job:
+        """用同一批参数重跑。派生任务（有 parent）不需要自己的 input.wav。"""
         old = self.get(job_id)
         if old is None:
             raise JobRejected("任务不存在")
-        if not (config.job_dir(job_id) / "input.wav").exists():
+        source_dir = config.job_dir(job_id)
+        if old.parent_id is None and not (source_dir / "input.wav").exists():
             raise JobRejected("这个任务的输入已被清理，请重新上传")
-        job = self.create(old.filename, old.tier)
-        shutil.copy2(config.job_dir(job_id) / "input.wav", config.job_dir(job.id) / "input.wav")
+        job = self.create(
+            old.filename, old.tier, old.scope, dict(old.params), old.parent_id
+        )
+        # meta.json 要一起复制：没有它，进程重启后这个目录既恢复不了、下载也没有源文件名
+        for name in ("input.wav", "meta.json"):
+            src = source_dir / name
+            if src.exists():
+                shutil.copy2(src, config.job_dir(job.id) / name)
         self.update(job.id, duration_sec=old.duration_sec)
         return job
 

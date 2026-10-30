@@ -246,6 +246,107 @@ def _note_from(
     )
 
 
+def durations_from_boundaries(boundaries: tp.Sequence[bool]) -> list[int]:
+    """帧级边界 → 每个音符占几帧。与上游 GAME 的 `regions_to_durations` 同义。
+
+    `boundaries[i]` 为真表示「第 i 帧是一个新音符的第一帧」。第 0 帧隐含开始第一个音符，
+    所以 `boundaries[0]` 的取值被忽略（上游用 -1 哨兵表达同一件事）。
+
+    返回值之和恒等于帧数，且每段 ≥ 1 帧：完全划分，不留缝也不产生 0 长音符。
+    上游那个 `bd2dur` 就是这个函数——它不是模型，不需要搬推理代码。
+    """
+    durations: list[int] = []
+    count = 0
+    for index, is_boundary in enumerate(boundaries):
+        if index > 0 and is_boundary:
+            durations.append(count)
+            count = 0
+        count += 1
+    if count:
+        durations.append(count)
+    return durations
+
+
+def spans_from_segments(
+    segments: tp.Iterable[tp.Mapping[str, float]],
+    hop_sec: float,
+    frames: int,
+) -> list[tuple[int, int, float | None]]:
+    """`notes_game.json` 的秒值段 → `(起始帧, 结束帧, 模型音高)`。
+
+    段是半开区间 `[start, start+dur)`，换算成帧后要减 1 才是闭区间右端。
+    越界段在这里裁掉，零长段直接丢，下游不必再防。
+    音高是浮点 MIDI；没有该字段（M1 产物）就返回 None，让下游退回曲线中位数。
+    """
+    spans: list[tuple[int, int, float | None]] = []
+    for segment in segments:
+        start = float(segment["start_sec"])
+        dur = float(segment["dur_sec"])
+        if dur <= 0 or hop_sec <= 0:
+            continue
+        lo = max(0, round(start / hop_sec))
+        hi = min(frames - 1, round((start + dur) / hop_sec) - 1)
+        if hi < lo:
+            continue
+        raw_midi = segment.get("midi")
+        midi = float(raw_midi) if isinstance(raw_midi, int | float) else None
+        spans.append((lo, hi, midi))
+    return spans
+
+
+def notes_from_spans(
+    curve: PitchCurve,
+    spans: tp.Iterable[tuple[int, int]],
+    hints: tp.Sequence[float] | None = None,
+) -> list[Note]:
+    """模型给的音符边界（闭区间帧号）→ 音符列表。
+
+    `hints` 与 `spans` 一一对应，是模型给的浮点 MIDI。给了就用它定音高
+    （`docs/05-game.md` M2）：实测 FCPE 段内中位数的音高一致率比模型低 14 个点。
+    没给就退回曲线中位数（M1 行为）。
+
+    段内没有有声帧的段直接丢弃；段与段之间允许留缝——这是模型的休止判断，
+    不该被我们的「完全划分」抹掉。刻意不做最小时长过滤：60 ms 以下的音符
+    在参考里真实存在，按我们自己的阈值砍会直接掉一致率。
+    """
+    cents = to_cents(curve.f0)
+    frames = len(cents)
+    span_list = [(int(lo), int(hi)) for lo, hi in spans]
+    paired: list[tuple[tuple[int, int], float | None]] = (
+        [(span, None) for span in span_list]
+        if hints is None
+        else [
+            (span, hints[index] if index < len(hints) else None)
+            for index, span in enumerate(span_list)
+        ]
+    )
+    paired.sort(key=lambda item: item[0])
+
+    notes: list[Note] = []
+    for (raw_lo, raw_hi), hint in paired:
+        lo = max(0, int(raw_lo))
+        hi = min(frames - 1, int(raw_hi))
+        if hi < lo:
+            continue
+        if hint is None:
+            note = _note_from(cents, lo, hi, curve.hop_sec)
+        else:
+            midi = int(round(hint))
+            if not 0 <= midi <= 127:
+                continue
+            # 偏差恰好 -50 音分是边界歧义，截到区间内侧（与 `_midi_from_cents` 同口径）
+            offset = max(-49.9, min(50.0, (float(hint) - midi) * 100.0))
+            note = Note(
+                start_sec=lo * curve.hop_sec,
+                dur_sec=(hi - lo + 1) * curve.hop_sec,
+                midi=midi,
+                cents_offset=offset,
+            )
+        if note is not None:
+            notes.append(note)
+    return notes
+
+
 def segment(
     curve: PitchCurve,
     params: SegmentParams = SegmentParams(),

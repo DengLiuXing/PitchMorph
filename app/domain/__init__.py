@@ -13,13 +13,23 @@ from app.domain.curve import (
     to_cents,
 )
 from app.domain.midi import to_bend_midi, to_note_midi
-from app.domain.notes import Note, SegmentParams, segment
+from app.domain.notes import (
+    Note,
+    SegmentParams,
+    durations_from_boundaries,
+    notes_from_spans,
+    segment,
+    spans_from_segments,
+)
 
 __all__ = [
     "PitchCurve",
     "Note",
     "SegmentParams",
     "segment",
+    "durations_from_boundaries",
+    "notes_from_spans",
+    "spans_from_segments",
     "to_cents",
     "median_smooth",
     "fix_octave_jumps",
