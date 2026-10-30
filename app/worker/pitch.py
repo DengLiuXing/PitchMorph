@@ -2,6 +2,9 @@
 
 FCPE 用 NaN 表示无声（探针实测静音段 96/96 帧可区分），这里统一转成 JSON 的 null。
 **不能写 0**：0 Hz 在前端是合法低音，会画出一条贴着底边的假线。
+
+同一份 16 kHz 音频顺带算一次谱通量起音，写 `features/onset.json`：
+音高游程答不了「同音高换字」，起音能。两者帧栅格一致（10 ms）。
 """
 
 from __future__ import annotations
@@ -10,10 +13,12 @@ import inspect
 import json
 import math
 import os
+import sys
 import typing as tp
 from pathlib import Path
 
 from app import protocol
+from app.worker import onsets as onset_detector
 
 SR = 16000
 HOP = 160
@@ -162,6 +167,20 @@ def run(req: tp.Mapping[str, tp.Any]) -> dict[str, str]:
     if gap_sec > 0:
         curve = fill_gaps(curve, HOP_SEC, max_gap_sec=gap_sec)
 
+    # 起音检测：复用同一份 16 kHz 音频，零额外解码。
+    # 关闭时也写空数组 —— 跳过写盘会让上一次的 onset.json 继续生效，
+    # 用户点了「关」却发现音符数没变，是最难查的那类 bug。
+    onset_flag = req.get("onsets")
+    onset_enabled = True if onset_flag is None else bool(onset_flag)
+    detected: list[int] = []
+    if onset_enabled:
+        protocol.progress(0.82, "检测起音")
+        try:
+            detected = onset_detector.detect_onsets(wav.detach().cpu().numpy().reshape(-1))
+        except Exception as exc:  # 起音是附属产物，不能拖垮音高
+            print(f"起音检测失败（已降级为空）：{exc!r}", file=sys.stderr, flush=True)
+    onset_payload = onset_detector.to_payload(detected, len(curve))
+
     protocol.progress(0.9, "写盘")
     payload = {
         "version": 1,
@@ -183,4 +202,12 @@ def run(req: tp.Mapping[str, tp.Any]) -> dict[str, str]:
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, dst)
 
-    return {"pitch": f"{dst.parent.name}/{dst.name}"}
+    onset_dst = dst.with_name("onset.json")
+    onset_tmp = onset_dst.with_name(onset_dst.name + ".part")
+    onset_tmp.write_text(json.dumps(onset_payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(onset_tmp, onset_dst)
+
+    return {
+        "pitch": f"{dst.parent.name}/{dst.name}",
+        "onset": f"{onset_dst.parent.name}/{onset_dst.name}",
+    }

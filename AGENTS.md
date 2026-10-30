@@ -9,6 +9,7 @@ FastAPI 主进程**不加载 torch**；全部分轨与音高推理发生在 `pyt
 |---|---|
 | `docs/03-pytorch-dual.md` | 为什么从 ONNX 换到 PyTorch |
 | `docs/04-ustx.md` | USTX 字段契约（对照 OpenUtau 源码核实） |
+| `docs/05-game.md` | 音符切分改走 GAME 的计划（M0 验证 → M1 边界 → M2 音高 → M3 工程化） |
 | `docs/01-decisions.md` | 关键决策与各自的推翻条件 |
 | `docs/perf-audit.md` | **ONNX 时代的数据，v2 不适用**，只作历史参考 |
 | `.agent/memory/` | 跨会话项目记忆，索引是 `MEMORY.md`（随仓库走，不要 ignore） |
@@ -62,7 +63,7 @@ stdin 一份 JSON 任务描述；stdout 逐行一个 JSON 事件；**日志一�
 data/jobs/{id}/
 ├── input.wav                 # 44.1k 立体声 PCM16，retry 依赖它
 ├── stems/{drums,bass,other,vocals}.wav
-├── features/{pitch,notes}.json
+├── features/{pitch,onset,notes}.json
 └── exports/*.mid, *.ustx     # 派生产物，可随时删除重建
 ```
 
@@ -101,10 +102,14 @@ data/jobs/{id}/
 **音高/音符导出是实验性功能**（UI 上标了「实验性」）。分轨是稳的，音高不是：
 
 - FCPE 是**单声部**模型，合唱与和声只能出一条线
-- 音符切分是**启发式**（半音游程 + 60 音分迟滞 + 120 ms 最短时长），
-  比不上 OpenUtau 的 GAME 那类音符级模型。断线（清辅音、气声）与边界误差都在所难免
+- 音符切分是**启发式**（半音游程 + 60 音分迟滞 + 120 ms 最短时长，
+  外加 worker 里谱通量起音 `features/onset.json` 作为并集，见 `app/worker/onsets.py`），
+  比不上 OpenUtau 的 GAME 那类音符级模型。断线（清辅音、气声）与边界误差都在所难免。
+  起音只能抓「辅音起音」这一种证据：连音里同一个元音换字仍然切不开
+- 切分是**完全划分**：非静音区间内音符首尾相接，只有静音才留缝。
+  短片段并入邻居而不是丢弃——丢弃会在有声区里挖洞，音符会变成一小段一小段
 - 想更准只有换模型：GAME 是训练出来的音符级模型，它的「边界阈值 / 边界半径 / 分数阈值」
-  是模型输出的后处理参数，不是能移植的算法
+  是模型输出的后处理参数，不是能移植的算法。实测数据与接入计划见 `docs/05-game.md`
 
 **未做 / 未验证**：
 - 导出固定 120 bpm（没做 BPM 检测，量化交给 DAW）

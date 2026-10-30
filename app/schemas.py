@@ -60,6 +60,8 @@ class PitchParams(BaseModel):
     f0_max: float | None = None
     threshold: float | None = None
     gap_ms: int | None = None
+    # 起音切分开关。None = 用默认（开），false = 复现加大音前的旧结果
+    onsets: bool | None = None
 
 
 class TierOut(BaseModel):

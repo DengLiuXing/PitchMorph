@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.schemas import PitchParams
 
 client = TestClient(app)
 
@@ -42,6 +45,30 @@ def test_missing_job_pitch_is_404():
 
 def test_missing_job_cancel_is_404():
     assert client.post("/api/jobs/doesnotexist/cancel").status_code == 404
+
+
+def test_missing_job_onset_is_404():
+    assert client.get("/api/jobs/doesnotexist/onset").status_code == 404
+
+
+def test_onset_endpoint_serves_file(tmp_path, monkeypatch):
+    from app import config
+
+    features = tmp_path / "features"
+    features.mkdir()
+    payload = {"version": 1, "frames": 4, "onsets": [1, 3]}
+    (features / "onset.json").write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(config, "job_dir", lambda job_id: tmp_path)
+
+    response = client.get("/api/jobs/whatever/onset")
+    assert response.status_code == 200
+    assert response.json()["onsets"] == [1, 3]
+
+
+def test_pitch_params_keeps_explicit_false():
+    # exclude_none 只剔除 None，false 必须活着传到 worker，否则「关掉起音」不生效
+    assert PitchParams().model_dump(exclude_none=True) == {}
+    assert PitchParams(onsets=False).model_dump(exclude_none=True) == {"onsets": False}
 
 
 def test_bad_stem_name_is_404():

@@ -62,6 +62,32 @@ def normalize_smooth(value: int) -> int:
     return clamped if clamped % 2 == 1 else clamped + 1
 
 
+def load_onsets(root: Path) -> list[int] | None:
+    """读 `features/onset.json` 的起音帧。缺失或损坏一律当作「没有」。
+
+    起音只是切分的辅助证据，导出不能因为它而出错：老任务没有这个文件，
+    手动改坏一个字段也不该让 MIDI 下不下来。
+    """
+    path = root / "features" / "onset.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    frames = payload.get("frames")
+    raw = payload.get("onsets")
+    if not isinstance(frames, int) or isinstance(frames, bool) or not isinstance(raw, list):
+        return None
+    return [
+        index
+        for index in raw
+        if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < frames
+    ]
+
+
 def _prepare(root: Path, smooth: int) -> tuple[PitchCurve, list]:
     """读 pitch.json → 去倍频跳变 → 按窗口平滑 → 切音符。
 
@@ -79,7 +105,8 @@ def _prepare(root: Path, smooth: int) -> tuple[PitchCurve, list]:
         f0 = median_smooth(f0, window)
 
     curve = PitchCurve(hop_sec=raw.hop_sec, f0=f0)
-    notes = segment(curve, SegmentParams(smooth_window=1))
+    # 平滑不改变帧索引，所以起音帧号不需要任何偏移补偿
+    notes = segment(curve, SegmentParams(smooth_window=1), load_onsets(root))
     return curve, notes
 
 

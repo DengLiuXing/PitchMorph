@@ -256,6 +256,14 @@ def get_pitch(job_id: str) -> FileResponse:
     return FileResponse(path, media_type="application/json")
 
 
+@app.get("/api/jobs/{job_id}/onset")
+def get_onset(job_id: str) -> FileResponse:
+    path = config.job_dir(job_id) / "features" / "onset.json"
+    if not path.exists():
+        raise HTTPException(404, "这个任务还没有起音数据")
+    return FileResponse(path, media_type="application/json")
+
+
 @app.get("/api/jobs/{job_id}/stems/{stem}")
 def download_stem(job_id: str, stem: str) -> FileResponse:
     if stem not in STEMS:
