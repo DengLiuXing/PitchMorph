@@ -39,6 +39,7 @@ uv run python scripts/smoke_worker.py <素材> --tier vocals --pitch  # 直喂�
 uv run python scripts/smoke_http.py <素材>   # 上传 → 轮询 → /media → Range 206
 uv run python scripts/compare_notes.py --pitch data/jobs/<id>/features/pitch.json --ref <参考.ustx>
 uv run python scripts/fetch_game.py          # 下载 GAME 权重到 app/worker/game/weights/（44.7 MB）
+uv run python scripts/eval_vocadito.py       # 40 首人工标注基线（约 60 s），调参看它
 ```
 
 `compare_notes.py` 是音符切分的唯一验收口径，`docs/05-game.md` 的 M0–M2 都以它判定。

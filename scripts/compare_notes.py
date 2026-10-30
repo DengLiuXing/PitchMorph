@@ -42,11 +42,37 @@ from app.exports import load_onsets  # noqa: E402
 RESOLUTION = 480  # tick per quarter，OpenUtau 侧恒为 480
 
 
-def load_reference(path: Path, part_index: int = 0) -> tuple[list[tuple[float, float, int]], float]:
-    """USTX → [(start_sec, dur_sec, midi)]，以及每 tick 的秒数。
+def load_vocadito_notes(path: Path) -> list[tuple[float, float, int]]:
+    """vocadito 的音符标注 CSV（start_sec, f0_hz, dur_sec）→ [(start, dur, midi)]。
 
-    只支持单一 tempo 的工程（参考样例都是 120 bpm）；多 tempo 会取第一个。
+    f0 是 Hz，必须转成 MIDI 才能和本工具、和 USTX 参考同口径比较。
+    f0 <= 0 表示无音高，直接丢掉。
     """
+    import math
+
+    notes: list[tuple[float, float, int]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        start, hz, duration = (float(value) for value in line.split(",")[:3])
+        if hz <= 0.0 or duration <= 0.0:
+            continue
+        midi = 69 + 12 * math.log2(hz / 440.0)
+        notes.append((start, duration, int(round(midi))))
+    notes.sort()
+    return notes
+
+
+def load_reference(path: Path, part_index: int = 0) -> tuple[list[tuple[float, float, int]], float]:
+    """参考音符 → [(start_sec, dur_sec, midi)]，以及每 tick 的秒数。
+
+    支持两种来源：OpenUtau 的 `.ustx`，和 vocadito 的音符标注 `.csv`（按后缀分辨）。
+    后者是人工标注，不依赖任何模型版本——调参时优先用它。
+    """
+    if path.suffix.lower() == ".csv":
+        return load_vocadito_notes(path), 0.0
+
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     tempos = data.get("tempos") or [{"position": 0, "bpm": 120}]
     bpm = float(tempos[0]["bpm"])
