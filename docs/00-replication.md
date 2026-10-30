@@ -4,6 +4,16 @@
 > 顺序是「先能出声 → 再能选 → 再能打断 → 最后上 GPU」，每一步都有可验证的产出。
 > 已经踩过的坑集中在本文件第 6 节，不用重新挖。
 
+> ⚠️ **本文件是 v1（ONNX Runtime + demucs-onnx）的复刻指南，那条路线已被推翻。**
+> PitchMorph v2 改走 PyTorch，原因与取舍见 `03-pytorch-dual.md`。所以：
+>
+> - **不要照抄**第 2、3、5 节的 `demucs-onnx` / `onnxruntime-gpu` 装法与代码，v2 的依赖是
+>   `pyproject.toml` 里的 `demucs==4.0.1` + `torchfcpe`（cu128）。
+> - 第 6 节六条坑里，只有「`v-show` 白屏」「`/media/jobs/...` 404」「`--reload` 丢任务」跨路线成立；
+>   显存只增不减 / 会话常驻 / 清缓存顺序都是 ONNX arena 的行为，PyTorch 下问题域不存在
+>   （见 `perf-audit.md` 的横幅）。
+> - 第 7 节的验收命令已按 v2 的脚本更新。
+
 ---
 
 ## 1. 先明确你在做什么
@@ -45,10 +55,14 @@
 
 ## 3. 最小可运行版本（30 分钟）
 
+> **本节是 v1 / ONNX 时代的路径**（`demucs-onnx`），里面的 Python 3.11 只对那套栈成立。
+> 当前 v2 是 PyTorch 路线，用 Python 3.12 + `torch==2.11.0+cu128`，见根目录 `README.md`
+> 与 `pyproject.toml`。不要把这里的 `uv python pin 3.11` 用到 v2 上。
+
 目标：**命令行把一首歌分成 4 个 wav**。先不要 Web，不要 GPU。
 
 ```powershell
-# Python 3.11 是硬要求：demucs-onnx 的依赖在 3.12+ 未验证
+# 仅 v1：Python 3.11 是 demucs-onnx 的要求，v2 见 README
 uv python pin 3.11
 uv init --no-workspace
 uv add demucs-onnx==0.3.4 onnxruntime soundfile soxr
@@ -208,20 +222,21 @@ uv run python -c "from app import runtime; print(runtime.providers())"
 
 ## 7. 验收：怎样算复刻成功
 
-按顺序全过一遍，任何一条不过都别往下走：
+按顺序全过一遍，任何一条不过都别往下走（脚本都以仓库根为工作目录）：
 
-1. `uv run python scripts/smoke_offline.py` 全过（不需要权重，stub 掉 ONNX）
-2. `uv run python scripts/smoke_media.py` 全过（mp4 / m4s / 无音轨 / 超长）
-3. 命令行分轨一首 12 s 素材，四轨产出齐全
-4. `uv run python scripts/bench.py samples/物凄.m4s --tier vocals`：CUDA 单块 < 1 s
+1. `uv run pytest`：74 项全过。不需要权重、不需要 GPU、不需要起服务
+2. `uv run python scripts/probe_env.py`：torch 在 sm_120 上真跑一次 conv1d，FCPE 对 440 Hz 正弦给出 ±2 Hz 内的中位数
+   （首次会从 HuggingFace 下载约 20 MB 权重）
+3. `uv run python scripts/smoke_worker.py <你的素材> --tier vocals --pitch`：直接喂子进程，出 `stems/vocals.wav` 与 `features/pitch.json`
+4. 另开终端起服务后 `uv run python scripts/smoke_http.py <你的素材>`：上传 → 轮询 → `/media` 可取 + Range 206 → 音高接口有帧
 5. 浏览器上传同一首，四轨能同步播放、拖动、静音、独奏
-6. `nvidia-smi` 观察峰值 < 4 GB（8 GB 卡）
-7. 取消一个进行中的任务，`stems/` 里没有半成品
+6. `nvidia-smi` 看着跑一遍：显存峰值不随歌曲变长而抬升（一次只驻留一个模型，跑完即退出）
+7. 取消一个进行中的任务，`stems/` 里没有半成品（`.part` 残留可以，`.wav` 半截不行）
 
 ---
 
 ## 8. 下一步
 
-- 想改造成 PyTorch 生态、加音高分析、导出 MIDI → 读 `03-pytorch-dual.md`
+- 想知道 v2 为什么从 ONNX 换到 PyTorch（以及怎么加音高、导出 MIDI）→ 读 `03-pytorch-dual.md`
 - 想知道每个性能数字怎么来的、哪些方向已经试过并否决 → 读 `perf-audit.md`
 - 想复刻前端那套交互 → 读 `02-frontend.md`
