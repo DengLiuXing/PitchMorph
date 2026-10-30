@@ -3,7 +3,7 @@ name = "pitchmorph"
 version = "2.0.0"
 description = "本地分轨 + 音高分析 → MIDI / OpenUtau 工程"
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.12,<3.13"
 
 dependencies = [
     "fastapi>=0.115",
@@ -14,8 +14,10 @@ dependencies = [
     "imageio-ffmpeg>=0.5",
     "soxr>=0.5",
     "numpy>=1.26",
-    "torch>=2.7",
-    "torchaudio>=2.7",
+    # 钉死版本：升级 Python 时不能让 torch 一起变，否则出问题分不清是哪个变量。
+    # 2.11.0+cu128 已在 sm_120（RTX 5060）上由 scripts/probe_env.py 验证通过。
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
     "demucs==4.0.1",
     "pretty_midi>=0.2.10",
     "pyyaml>=6.0",
