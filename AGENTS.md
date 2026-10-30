@@ -12,7 +12,8 @@ FastAPI 主进程**不加载 torch**；全部分轨与音高推理发生在 `pyt
 | `docs/02-frontend.md` | 前端交互与视觉基线（核心源码 `frontend/src/components/Workbench.vue`） |
 | `docs/03-pytorch-dual.md` | 为什么从 ONNX 换到 PyTorch |
 | `docs/04-ustx.md` | USTX 字段契约（对照 OpenUtau 源码核实） |
-| `docs/05-game.md` | 音符切分改走 GAME 的计划（M0 验证 → M1 边界 → M2 音高 → M3 工程化） |
+| `docs/05-game.md` | GAME 音符模型的接入、M0–M3 实测数据、ONNX 可行性（已接入，M3 完成） |
+| `docs/06-v3.md` | V3 的约束（导出不做平滑）与重构清单；V2 已冻结时读它 |
 | `docs/perf-audit.md` | **ONNX 时代的数据，v2 不适用**，只作历史参考 |
 | `.agent/memory/` | 跨会话项目记忆，索引是 `MEMORY.md`（随仓库走，不要 ignore） |
 
@@ -160,6 +161,10 @@ data/jobs/{id}/
 
 任务已按 `scope` 拆成「只分离 / 只分析 / 分离+分析」三条，前端对应两个入口与两张历史列表；
 四个入口都已用真实素材跑过（A 只有 stems、AB 全链路、仅 B 无 stems、派生分析用父任务 vocals）。
+
+**V2 已冻结**（2026-10-30 推送 `dev`）。V3 的方向与重构清单在 `docs/06-v3.md`，
+其中已定：导出层不做平滑（`smooth = 1`，交给 OpenUtau）、曲线密度 50 ms → 25 ms。
+动 V3 之前先读那一页，别在 V2 上继续加功能。
 
 实测（12 s 素材）：
 
