@@ -57,7 +57,13 @@ def infer_all(wavs: list[Path], out_dir: Path, args: argparse.Namespace) -> None
     dataset = SlicedAudioFileIterableDataset(
         filemap={path.name: path for path in wavs},
         samplerate=sr,
-        slicer=Slicer(sr=sr, threshold=-40.0, min_length=1000, min_interval=200, max_sil_kept=100),
+        slicer=Slicer(
+            sr=sr,
+            threshold=args.slice_threshold,
+            min_length=args.slice_min_length,
+            min_interval=200,
+            max_sil_kept=args.slice_max_sil,
+        ),
         language=lang_map.get(args.language, 0) if args.language else 0,
     )
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +123,10 @@ def main() -> int:
     parser.add_argument("--est", type=float, default=0.2, help="存在阈值")
     parser.add_argument("--language", default="", help="语言条件，如 zh / en")
     parser.add_argument("--tolerance", type=float, default=0.05, help="起音匹配容差（秒）")
+    # 切片参数：每片独立推理，切点决定模型看到的上下文，所以它也是「参数」
+    parser.add_argument("--slice-threshold", type=float, default=-40.0, help="静音阈值 dB")
+    parser.add_argument("--slice-min-length", type=int, default=1000, help="最短切片（ms）")
+    parser.add_argument("--slice-max-sil", type=int, default=100, help="片内最多保留静音（ms）")
     parser.add_argument("--skip-inference", action="store_true", help="复用上次的 MIDI")
     args = parser.parse_args()
 
