@@ -101,9 +101,10 @@ GAME_DEFAULT_MODEL: Final = "GAME-1.0-small"
 # GAME 的体积名（release 里的 GAME-1.0-<size>.zip）。体积只影响精度与耗时，与分轨档位无关。
 GAME_SIZES: Final[tuple[str, ...]] = ("small", "medium", "large")
 
-# 切片：静音阈值决定每段喂给模型多少上下文。上游默认 -40，vocadito 40 首实测
-# 音高一致 -40→82.6%、-60→84.6%、-70→84.9%，-30 会把长音切断（68.6%）。
-GAME_SLICE_THRESHOLD_DB: Final = -60.0
+# 切片：静音阈值决定每段喂给模型多少上下文。
+# 取上游默认 -40。曾经试过 -60/-70（vocadito 指标更好），但人工听感反而更差，
+# 那批调参结论已按 D18 全部作废，详见 docs/01-decisions.md 与 docs/06-v3.md 的作废声明。
+GAME_SLICE_THRESHOLD_DB: Final = -40.0
 # 但切片越长，segmenter 的 O(T²) 越贵（整段 188 s 要 5.6 GB 直接 OOM），
 # 所以单片长度必须有硬上限：超过就在能量最低处再切一刀。
 GAME_MAX_SLICE_SEC: Final = 30.0
