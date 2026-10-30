@@ -19,3 +19,14 @@ type: project
   指标衡量的是「与参考一致」，参考本身是 GAME 输出或 20 s 清唱，与听感有系统偏差。
   V3 以人工试听 + 人工协商调参为准；指标必须先证明与听感相关才能用来决策。
 - 不要再在 V2 上加功能；`data/jobs` 旧任务不迁移，交给 TTL 清掉。
+
+**V3 已确认的技术事实（2026-10-30，已联网核实）：**
+- 分离只做两档：**仅人声**与**六轨**，不做四轨；六轨要用 `htdemucs_6s` 另一份权重
+  （HF `StemSplitio/htdemucs-6s-onnx` 已有现成 ONNX，输入固定 7.8 s = 343980 采样）。
+- demucs 的 7.8 s 分块**不是随便定的**：htdemucs 训练段长，源码对 `--segment > 7.8` 报错，ONNX 图输入也写死。
+  1/4 重叠与三角窗是 demucs 的 `overlap=0.25` + `transition_power=1` 默认值。
+- **DirectML EP 被锁在 1.24.4 与语言无关**：ORT 官方把它标为 sustained engineering / legacy，
+  PyPI、NuGet（.NET）、C++/Rust 拿到的都是这一版。换语言解决不了；只有 Windows ML（WinRT 生态）能绕开。
+  CUDA EP 不受影响，`onnxruntime-gpu` 跟主线到 1.31.x。
+- FCPE 没有官方 ONNX（只有一个 Burn 格式的第三方导出），必须在 v2 侧一次性导出并做帧级等价验收。
+- UI 要提示：音符分析只对单一声源可靠，混入和声会让音高线跳跃、切分漂移。
