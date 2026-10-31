@@ -12,8 +12,12 @@ USTX 的字段与单位全部对照 OpenUtau 源码核实过（V2 已在真机 O
   所以音符 pitch.data 只放 OpenUtau 新音符的默认锚点（±40ms 平直段 + snap_first，
   让 OpenUtau 自己在音符连接处渲染短促的滑音连接线）；
 - pitd 的写法对照 `Rmvpe.ApplyToPart`（OpenUtau 转录后写音高线的同一套管线）：
-  音符首尾各修剪 min(25ms, 15% 时长)（这段留给滑音连接线）、5 tick 网格、
-  ≤60 tick 的短隙线性填充、中值滤波 + 自适应尖峰抑制；
+  清音帧线性补齐（`InterpolateMidiPitch`）避免曲线断成碎片、音符首尾各修剪
+  min(25ms, 15% 时长)（这段留给滑音连接线）、5 tick 网格、≤60 tick 的短隙线性填充、
+  中值滤波 + 自适应尖峰抑制；
+- 但那套参数只是"去转录毛刺"，不是低通：FCPE 在 10 ms 尺度上的帧间抖动
+  会原样写进 pitd，OpenUtau 逐点跟随就是音高颤抖。所以在建 pitd 之前先做一级
+  高斯低通（σ=20 ms，实测粗糙度 p90 从 64 降到 40 音分，颤音周期 ≈170 ms 不受影响）；
 - `tempos[0].position` 与 `time_signatures[0].bar_position` 必须为 0。
 
 MIDI 用 mido 实现（不引入 pretty_midi）：每个音符一条长音符 + pitch bend 还原颤音与滑音，
@@ -30,6 +34,8 @@ RESOLUTION = 480
 CURVE_INTERVAL = 5
 PITD_MIN = -1200
 PITD_MAX = 1200
+# 建 pitd 前的高斯低通：只压帧间抖动，不碰颤音（周期 ≈170 ms）
+PITD_SMOOTH_SIGMA_MS = 20.0
 # Rmvpe.ApplyToPart 的同款参数
 PITD_EDGE_TRIM_MS = 25.0
 PITD_EDGE_TRIM_RATIO = 0.15
@@ -138,14 +144,80 @@ def _simplify(points: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return result
 
 
+def _interpolate_gaps(cents) -> list[float | None]:
+    """清音帧线性补齐，对应 OpenUtau 的 `RmvpeResult.InterpolateMidiPitch`。
+
+    直接把 None 丢掉会让 pitd 断成一截一截，OpenUtau 又用直线跨过缺口，
+    字头、气口处就出现突然滑音。OU 是先整段插值再写曲线，这里照做。
+    """
+    result = list(cents)
+    total = len(result)
+    first = next((index for index, value in enumerate(result) if value is not None), None)
+    if first is None:
+        return result
+    for index in range(first):
+        result[index] = result[first]
+    previous = first
+    index = first + 1
+    while index < total:
+        if result[index] is not None:
+            previous = index
+            index += 1
+            continue
+        gap_start = index
+        while index < total and result[index] is None:
+            index += 1
+        if index < total:
+            left, right = result[previous], result[index]
+            span = index - previous
+            for offset in range(1, span):
+                result[previous + offset] = left + (right - left) * offset / span
+            previous = index
+        else:
+            for tail in range(gap_start, total):
+                result[tail] = result[previous]
+    return result
+
+
+def _smooth_cents(cents, hop_sec: float) -> list[float | None]:
+    """高斯低通（σ=PITD_SMOOTH_SIGMA_MS），只在有声帧上归一化。
+
+    中值滤波只能去掉孤立尖点，压不住持续的帧间抖动；这一步才是真正的低通。
+    清音帧（None）不参与卷积也不产生输出——`_interpolate_gaps` 之后一般已经没有
+    None，这里保留兜底，避免把邻段的音高抹过去。
+    """
+    sigma = PITD_SMOOTH_SIGMA_MS / 1000.0 / hop_sec
+    if sigma <= 0 or len(cents) < 3:
+        return list(cents)
+    radius = int(math.ceil(3.0 * sigma))
+    kernel = [math.exp(-0.5 * (offset / sigma) ** 2) for offset in range(-radius, radius + 1)]
+    smoothed: list[float | None] = []
+    total = len(cents)
+    for index, value in enumerate(cents):
+        if value is None:
+            smoothed.append(None)
+            continue
+        acc = 0.0
+        weight = 0.0
+        for offset, tap in zip(range(-radius, radius + 1), kernel):
+            neighbour = index + offset
+            if 0 <= neighbour < total and cents[neighbour] is not None:
+                acc += tap * cents[neighbour]
+                weight += tap
+        smoothed.append(acc / weight)
+    return smoothed
+
+
 def _pitd_curve(cents, notes: list[dict], hop_sec: float, bpm: float) -> tuple[list[int], list[int]]:
     """真实音高 -> pitd 曲线（xs 是 tick，ys 是相对该音符 tone 的音分）。
 
     对照 OpenUtau 的 `Rmvpe.ApplyToPart`（转录后写音高线的同一套管线）：
-    音符首尾修剪 min(25ms, 15% 时长) 留给滑音连接线，5 tick 网格，
-    组内短隙填充，中值滤波 + 自适应尖峰抑制，最后共线简化。
+    清音帧先线性补齐，音符首尾各修剪 min(25ms, 15% 时长) 留给滑音连接线，
+    5 tick 网格，组内短隙填充，中值滤波 + 自适应尖峰抑制，最后共线简化。
+    起点多一道高斯低通——那套参数只为去毛刺，帧间抖动得自己压。
     y 必须相对**该音符**的 tone 算，跨音符的插值没有意义。
     """
+    cents = _smooth_cents(_interpolate_gaps(cents), hop_sec)
     groups: list[list[tuple[int, int]]] = []
     for note in notes:
         midi = int(note["midi"])
