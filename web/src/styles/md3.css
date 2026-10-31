@@ -1,0 +1,503 @@
+/* MD3 组件层：只引用角色变量，不写死颜色。
+   状态层统一用 currentColor 叠加（hover 8% / focus 10% / pressed 12%），
+   这样同一套规则在 filled、tonal、outlined 上都能用。 */
+@tailwind components;
+
+@layer components {
+  .md-btn,
+  .md-icon-btn,
+  .md-segment,
+  .md-menu-item,
+  .md-card--interactive,
+  .md-upload,
+  .md-chip--action {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .md-btn::after,
+  .md-icon-btn::after,
+  .md-segment::after,
+  .md-menu-item::after,
+  .md-card--interactive::after,
+  .md-upload::after,
+  .md-chip--action::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: currentColor;
+    opacity: 0;
+    transition: opacity 120ms var(--md-ease);
+  }
+
+  .md-btn:hover::after,
+  .md-icon-btn:hover::after,
+  .md-segment:hover::after,
+  .md-menu-item:hover::after,
+  .md-card--interactive:hover::after,
+  .md-upload:hover::after,
+  .md-chip--action:hover::after {
+    opacity: 0.08;
+  }
+
+  .md-btn:focus-visible::after,
+  .md-icon-btn:focus-visible::after,
+  .md-segment:focus-visible::after,
+  .md-menu-item:focus-visible::after {
+    opacity: 0.1;
+  }
+
+  .md-btn:active::after,
+  .md-icon-btn:active::after,
+  .md-segment:active::after,
+  .md-menu-item:active::after {
+    opacity: 0.12;
+  }
+
+  /* ── app bar ───────────────────────────────────────────────── */
+  .md-appbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: var(--appbar-h);
+    padding: 0 12px 0 4px;
+    background: var(--md-surface-container-low);
+    color: var(--md-on-surface);
+    z-index: 30;
+  }
+
+  /* ── button ────────────────────────────────────────────────── */
+  .md-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 40px;
+    padding: 0 24px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--md-primary);
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    letter-spacing: 0.1px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      background-color 150ms var(--md-ease),
+      box-shadow 150ms var(--md-ease),
+      color 150ms var(--md-ease);
+  }
+
+  .md-btn--filled {
+    background: var(--md-primary);
+    color: var(--md-on-primary);
+  }
+
+  .md-btn--filled:hover {
+    box-shadow: 0 1px 3px 1px rgba(0, 0, 0, 0.18);
+  }
+
+  .md-btn--tonal {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+  }
+
+  .md-btn--outlined {
+    border-color: var(--md-outline-variant);
+    color: var(--md-primary);
+  }
+
+  .md-btn--text {
+    padding: 0 12px;
+  }
+
+  .md-btn--danger {
+    background: var(--md-error-container);
+    color: var(--md-on-error-container);
+  }
+
+  .md-btn--compact {
+    height: 32px;
+    padding: 0 14px;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+  }
+
+  .md-btn[disabled] {
+    cursor: not-allowed;
+    background: rgba(233, 225, 216, 0.12);
+    color: rgba(233, 225, 216, 0.38);
+    border-color: transparent;
+    box-shadow: none;
+  }
+
+  /* ── icon button ───────────────────────────────────────────── */
+  .md-icon-btn {
+    display: inline-grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--md-on-surface-variant);
+    cursor: pointer;
+    transition:
+      background-color 150ms var(--md-ease),
+      color 150ms var(--md-ease);
+  }
+
+  .md-icon-btn--tonal {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+  }
+
+  .md-icon-btn--sm {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--md-shape-sm);
+  }
+
+  .md-icon-btn[aria-pressed='true'] {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+  }
+
+  .md-icon-btn[data-act='mute'][aria-pressed='true'] {
+    background: var(--md-error-container);
+    color: var(--md-on-error-container);
+  }
+
+  .md-icon-btn[data-act='solo'][aria-pressed='true'] {
+    background: var(--md-primary);
+    color: var(--md-on-primary);
+  }
+
+  .md-icon-btn[disabled] {
+    color: rgba(233, 225, 216, 0.38);
+    cursor: not-allowed;
+  }
+
+  /* ── FAB（transport 的主动作）───────────────────────────────── */
+  .md-fab {
+    display: grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    flex: 0 0 auto;
+    border: none;
+    border-radius: var(--md-shape-lg);
+    background: var(--md-primary);
+    color: var(--md-on-primary);
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    transition:
+      box-shadow 150ms var(--md-ease),
+      transform 150ms var(--md-ease);
+  }
+
+  .md-fab:hover {
+    box-shadow: 0 2px 6px 2px rgba(0, 0, 0, 0.24);
+  }
+
+  .md-fab:active {
+    transform: scale(0.96);
+  }
+
+  /* ── segmented button ──────────────────────────────────────── */
+  .md-segmented {
+    display: inline-flex;
+    height: 40px;
+    overflow: hidden;
+    border: 1px solid var(--md-outline);
+    border-radius: 999px;
+  }
+
+  .md-segment {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 16px;
+    border: none;
+    background: transparent;
+    color: var(--md-on-surface);
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.1px;
+    cursor: pointer;
+    transition:
+      background-color 150ms var(--md-ease),
+      color 150ms var(--md-ease);
+  }
+
+  .md-segment + .md-segment {
+    border-left: 1px solid var(--md-outline);
+  }
+
+  .md-segment[aria-pressed='true'] {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+  }
+
+  /* ── card ──────────────────────────────────────────────────── */
+  .md-card {
+    border-radius: var(--md-shape-md);
+    transition:
+      background-color 180ms var(--md-ease),
+      border-color 180ms var(--md-ease),
+      box-shadow 180ms var(--md-ease);
+  }
+
+  /* filled 卡用 high 一级：页面是 surface，卡是 container-high，
+     中间靠 elevation 1 的柔和阴影拉开，不靠描边 */
+  .md-card--filled {
+    background: var(--md-surface-container-high);
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.24),
+      0 1px 3px 1px rgba(0, 0, 0, 0.16);
+  }
+
+  .md-card--outlined {
+    background: transparent;
+    border: 1px solid var(--md-outline-variant);
+  }
+
+  .md-card--interactive {
+    cursor: pointer;
+  }
+
+  .md-card--interactive:hover {
+    background: var(--md-surface-container-highest);
+    box-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.28),
+      0 4px 10px 2px rgba(0, 0, 0, 0.2);
+  }
+
+  /* ── chip ──────────────────────────────────────────────────── */
+  .md-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--md-outline-variant);
+    border-radius: var(--md-shape-sm);
+    color: var(--md-on-surface-variant);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+
+  .md-chip--primary {
+    border-color: transparent;
+    background: var(--md-primary-container);
+    color: var(--md-on-primary-container);
+  }
+
+  .md-chip--tertiary {
+    border-color: transparent;
+    background: var(--md-tertiary-container);
+    color: var(--md-on-tertiary-container);
+  }
+
+  .md-chip--flat {
+    border-color: transparent;
+    background: var(--md-surface-container-high);
+    color: var(--md-on-surface-variant);
+  }
+
+  /* ── slider（MD3：4dp 轨道 + 4x20 手柄）────────────────────── */
+  .md-slider {
+    width: 100%;
+    height: 24px;
+    margin: 0;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .md-slider::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(
+      90deg,
+      var(--md-primary) 0 var(--v, 0%),
+      var(--md-surface-container-highest) var(--v, 0%) 100%
+    );
+  }
+
+  .md-slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 4px;
+    height: 20px;
+    margin-top: -8px;
+    border: none;
+    border-radius: 2px;
+    background: var(--md-primary);
+  }
+
+  .md-slider::-moz-range-track {
+    height: 4px;
+    border-radius: 999px;
+    background: var(--md-surface-container-highest);
+  }
+
+  .md-slider::-moz-range-progress {
+    height: 4px;
+    border-radius: 999px;
+    background: var(--md-primary);
+  }
+
+  .md-slider::-moz-range-thumb {
+    width: 4px;
+    height: 20px;
+    border: none;
+    border-radius: 2px;
+    background: var(--md-primary);
+  }
+
+  .md-slider:disabled {
+    cursor: not-allowed;
+    opacity: 0.38;
+  }
+
+  /* ── linear progress ───────────────────────────────────────── */
+  .md-progress {
+    position: relative;
+    height: 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--md-surface-container-highest);
+  }
+
+  .md-progress > span {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: var(--md-primary);
+    transition: width 420ms var(--md-ease);
+  }
+
+  .md-progress--indeterminate > span {
+    width: 40%;
+    animation: pulse-track 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  /* ── menu ──────────────────────────────────────────────────── */
+  .md-menu {
+    position: fixed;
+    z-index: 60;
+    min-width: 196px;
+    padding: 8px 0;
+    border-radius: var(--md-shape-sm);
+    background: var(--md-surface-container-high);
+    box-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.32),
+      0 6px 16px 2px rgba(0, 0, 0, 0.24);
+  }
+
+  .md-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    height: 48px;
+    padding: 0 16px;
+    border: none;
+    background: transparent;
+    color: var(--md-on-surface);
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.1px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .md-menu-item[aria-pressed='true'] {
+    color: var(--md-primary);
+  }
+
+  .md-menu-item:disabled {
+    color: rgba(233, 225, 216, 0.38);
+    cursor: not-allowed;
+  }
+
+  .md-menu-item:disabled::after {
+    opacity: 0;
+  }
+
+  .md-menu-sep {
+    height: 1px;
+    margin: 8px 0;
+    background: var(--md-outline-variant);
+  }
+
+  .md-menu-flag {
+    margin-left: auto;
+    font-family: 'Roboto Mono', 'Cascadia Mono', Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: 0.4px;
+    color: var(--md-on-surface-variant);
+  }
+
+  /* ── bottom sheet ──────────────────────────────────────────── */
+  .md-sheet {
+    border-radius: var(--md-shape-lg) var(--md-shape-lg) 0 0;
+    background: var(--md-surface-container-high);
+    box-shadow:
+      0 -1px 3px rgba(0, 0, 0, 0.3),
+      0 -8px 28px 4px rgba(0, 0, 0, 0.28);
+  }
+
+  .md-sheet-handle {
+    width: 32px;
+    height: 4px;
+    margin: 10px auto 0;
+    border-radius: 999px;
+    background: var(--md-outline-variant);
+  }
+
+  /* ── upload card ───────────────────────────────────────────── */
+  .md-upload {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: 100%;
+    padding: 28px 24px;
+    border: 1px solid var(--md-outline-variant);
+    border-radius: var(--md-shape-lg);
+    background: var(--md-surface-container-low);
+    color: var(--md-on-surface);
+    text-align: center;
+    cursor: pointer;
+    transition:
+      background-color 180ms var(--md-ease),
+      border-color 180ms var(--md-ease);
+  }
+
+  .md-upload[data-drag='true'] {
+    border-color: var(--md-primary);
+    background: var(--md-surface-container);
+  }
+
+  .md-upload[data-busy='true'] {
+    cursor: progress;
+  }
+
+  .md-upload-icon {
+    display: grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    border-radius: 999px;
+    background: var(--md-primary-container);
+    color: var(--md-on-primary-container);
+  }
+}

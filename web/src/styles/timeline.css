@@ -1,0 +1,243 @@
+/* 时间轴 / transport / 音高监视器的结构性样式。
+   这三块是 DAW 式布局，MD3 组件层管不到，单独放一层但保持同样的角色变量。 */
+@tailwind components;
+
+@layer components {
+  .timeline {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    background: var(--md-surface-container-lowest);
+  }
+
+  .timeline-inner {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+
+  .ruler-row {
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    display: flex;
+    height: var(--ruler-h);
+    background: var(--md-surface-container-low);
+    border-bottom: 1px solid var(--md-outline-variant);
+  }
+
+  .ruler-gutter {
+    position: sticky;
+    left: 0;
+    z-index: 7;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    width: var(--head-w);
+    flex: 0 0 var(--head-w);
+    padding: 0 8px 0 12px;
+    border-right: 1px solid var(--md-outline-variant);
+    background: var(--md-surface-container-low);
+  }
+
+  .ruler-track {
+    position: relative;
+    flex: 1 0 auto;
+    height: 100%;
+  }
+
+  .lane-row {
+    display: flex;
+    border-bottom: 1px solid color-mix(in srgb, var(--md-outline-variant) 55%, transparent);
+  }
+
+  /* 轨头横向滚动时钉在左边（纵向跟着行走），时间轴永远与轨头列对齐 */
+  .lane-head {
+    position: sticky;
+    left: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 7px;
+    width: var(--head-w);
+    flex: 0 0 var(--head-w);
+    padding: 8px 10px 8px 12px;
+    border-right: 1px solid var(--md-outline-variant);
+    background: var(--md-surface-container-low);
+    transition: background-color 160ms var(--md-ease);
+  }
+
+  .lane-row:hover .lane-head {
+    background: var(--md-surface-container);
+  }
+
+  .lane-head[data-dimmed='true'] {
+    opacity: 0.5;
+  }
+
+  .lane-name {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    letter-spacing: 0.4px;
+    color: var(--md-on-surface);
+    white-space: nowrap;
+  }
+
+  .lane-swatch {
+    width: 4px;
+    height: 16px;
+    border-radius: 2px;
+    flex: 0 0 auto;
+  }
+
+  .lane-ms {
+    display: flex;
+    gap: 4px;
+  }
+
+  .lane-vol {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* 行高锁死：任何操作都不该让波形上下跳 */
+  .lane-track {
+    position: relative;
+    flex: 1 0 auto;
+    height: var(--lane-h);
+    cursor: crosshair;
+    touch-action: none;
+    transition: opacity 160ms var(--md-ease);
+  }
+
+  .lane-track[data-dimmed='true'] {
+    opacity: 0.38;
+  }
+
+  /* 视口画布：left 由 scrollX 驱动，视觉上永远贴在轨头右边，不随内容平移 */
+  .lane-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    pointer-events: none;
+  }
+
+  .lane-filler {
+    flex: 1;
+    min-height: 48px;
+    margin-left: var(--head-w);
+    background-image: linear-gradient(90deg, rgba(213, 196, 180, 0.045) 1px, transparent 1px);
+    background-repeat: repeat-x;
+  }
+
+  .playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 4;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--md-primary);
+    box-shadow: 0 0 14px color-mix(in srgb, var(--md-primary) 50%, transparent);
+    pointer-events: none;
+  }
+
+  .playhead::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid var(--md-primary);
+  }
+
+  /* ── transport ─────────────────────────────────────────────── */
+  .transport {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px 12px;
+    background: var(--md-surface-container);
+    border-top: 1px solid var(--md-outline-variant);
+  }
+
+  .seek {
+    position: relative;
+    flex: 1;
+    height: 24px;
+    cursor: pointer;
+    touch-action: none;
+    user-select: none;
+  }
+
+  .seek::before {
+    content: '';
+    position: absolute;
+    inset: 50% 0 auto 0;
+    height: 4px;
+    border-radius: 999px;
+    transform: translateY(-50%);
+    background: var(--md-surface-container-highest);
+  }
+
+  .seek-fill {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    height: 4px;
+    border-radius: 999px;
+    transform: translateY(-50%);
+    background: var(--md-primary);
+  }
+
+  .seek-knob {
+    position: absolute;
+    top: 50%;
+    width: 4px;
+    height: 20px;
+    border-radius: 2px;
+    transform: translate(-50%, -50%);
+    background: var(--md-primary);
+    transition: box-shadow 140ms var(--md-ease);
+  }
+
+  .seek:hover .seek-knob {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--md-primary) 16%, transparent);
+  }
+
+  /* ── 音高监视器 ────────────────────────────────────────────── */
+  .monitor-body {
+    position: relative;
+    height: 132px;
+    border-radius: var(--md-shape-md);
+    background: var(--md-surface-container-lowest);
+    overflow: hidden;
+  }
+
+  .monitor-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .monitor-state {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+  }
+}

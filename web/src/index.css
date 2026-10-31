@@ -1,0 +1,219 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* ── MD3 color roles · dark scheme · amber seed ─────────────────
+       组件里只允许引用角色名，不再出现字面量色值。
+       将来加浅色主题时，只覆盖这一组变量即可。 */
+    --md-primary: #ffb95c;
+    --md-on-primary: #462a00;
+    --md-primary-container: #653e00;
+    --md-on-primary-container: #ffdcba;
+
+    --md-secondary: #dcc3a5;
+    --md-on-secondary: #3e2e18;
+    --md-secondary-container: #55442c;
+    --md-on-secondary-container: #f8debf;
+
+    --md-tertiary: #7fd8cb;
+    --md-on-tertiary: #003731;
+    --md-tertiary-container: #005047;
+    --md-on-tertiary-container: #9cf5e7;
+
+    --md-surface: #15120d;
+    --md-on-surface: #e9e1d8;
+    --md-surface-container-lowest: #100d09;
+    --md-surface-container-low: #1d1914;
+    --md-surface-container: #211d18;
+    --md-surface-container-high: #2c2722;
+    --md-surface-container-highest: #37322c;
+    --md-on-surface-variant: #d5c4b4;
+
+    --md-outline: #9e8e7f;
+    --md-outline-variant: #51453a;
+
+    --md-error: #ffb4ab;
+    --md-on-error: #690005;
+    --md-error-container: #93000a;
+    --md-on-error-container: #ffdad6;
+
+    --md-inverse-surface: #e9e1d8;
+    --md-inverse-on-surface: #37322c;
+    --md-inverse-primary: #835500;
+
+    /* ── shape ─────────────────────────────────────────────────── */
+    --md-shape-xs: 4px;
+    --md-shape-sm: 8px;
+    --md-shape-md: 12px;
+    --md-shape-lg: 16px;
+    --md-shape-xl: 28px;
+
+    /* ── motion ────────────────────────────────────────────────── */
+    --md-ease: cubic-bezier(0.2, 0, 0, 1);
+    --md-ease-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+
+    /* ── 时间轴尺寸（唯一的布局常量来源）───────────────────────── */
+    --head-w: 208px;
+    --lane-h: 76px;
+    --ruler-h: 32px;
+    --appbar-h: 64px;
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-surface text-on-surface font-sans;
+    margin: 0;
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.25px;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 极淡的暖色顶光 + 细扫描线：给纯色调表面一点仪器质感，不破坏 tonal 层级 */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background:
+      radial-gradient(
+        880px 420px at 12% -12%,
+        color-mix(in srgb, var(--md-primary) 9%, transparent),
+        transparent 62%
+      ),
+      radial-gradient(
+        720px 380px at 96% -6%,
+        color-mix(in srgb, var(--md-tertiary) 5%, transparent),
+        transparent 68%
+      );
+  }
+
+  ::selection {
+    background: var(--md-primary-container);
+    color: var(--md-on-primary-container);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--md-primary);
+    outline-offset: 2px;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: var(--md-surface-container-highest);
+    border-radius: 999px;
+    border: 2px solid var(--md-surface);
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--md-outline-variant);
+  }
+}
+
+@layer utilities {
+  /* ── MD3 type scale ─────────────────────────────────────────── */
+
+  .md-display-small {
+    font-size: 36px;
+    line-height: 44px;
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+
+  .md-headline-small {
+    font-size: 24px;
+    line-height: 32px;
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+
+  .md-title-large {
+    font-size: 22px;
+    line-height: 28px;
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+
+  .md-title-medium {
+    font-size: 16px;
+    line-height: 24px;
+    font-weight: 500;
+    letter-spacing: 0.15px;
+  }
+
+  .md-title-small {
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    letter-spacing: 0.1px;
+  }
+
+  .md-body-large {
+    font-size: 16px;
+    line-height: 24px;
+    letter-spacing: 0.5px;
+  }
+
+  .md-body-medium {
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.25px;
+  }
+
+  .md-body-small {
+    font-size: 12px;
+    line-height: 16px;
+    letter-spacing: 0.4px;
+  }
+
+  .md-label-large {
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    letter-spacing: 0.1px;
+  }
+
+  .md-label-medium {
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+  }
+
+  .md-label-small {
+    font-size: 11px;
+    line-height: 16px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+  }
+
+  /* 数字一律等宽对齐，时间码不会跳字宽 */
+  .md-num {
+    @apply font-mono;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+  }
+
+  .md-scroll {
+    scrollbar-gutter: stable;
+    overscroll-behavior: contain;
+  }
+}

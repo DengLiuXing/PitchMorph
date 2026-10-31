@@ -1,0 +1,29 @@
+# PitchMorph V3 —— 默认依赖（CUDA 加速，NVIDIA 卡）
+#
+# 与 requirements-cpu.txt 互斥：两者都提供同名顶层模块 onnxruntime，
+# 同一个 venv 里只能装其中一个。切换必须重建 venv，不要原地覆盖。
+#
+# 系统前置：NVIDIA 驱动 >= 580（实测 617.42）。**不需要**安装 CUDA Toolkit，
+# CUDA 13 运行时与 cuDNN 9 由 extras 通过 pip 拉取（约 1.5–2 GB）。
+# 进程启动时必须调用 ort.preload_dlls()，否则 Conv 会报
+# NOT_IMPLEMENTED: cuDNN is unavailable ... LoadLibrary failed for cudnn64_9.dll
+#
+# 实测（2026-10-31，RTX 5060 Laptop 8 GB，见 V3 构想.md 第 14 节）：
+#   demucs 单段 7.8 s 音频：单文件四轨 0.70 s，单专家 0.70 s（CPU 分别 1.19 / 1.45 s）
+
+onnxruntime-gpu[cuda,cudnn]==1.31.1
+numpy>=2.1,<3
+huggingface_hub>=0.30
+
+# 音频 I/O：av 自带 FFmpeg，负责解码（m4a/aac/mp4/wav/flac）与重采样到 44.1 kHz
+av>=14
+soundfile>=0.13
+
+# Web 层（本地端口，单进程，一次只跑一个任务）
+fastapi
+uvicorn[standard]
+python-multipart
+
+# 导出层：SMF 与 OpenUtau 的 USTX（YAML）
+mido
+pyyaml
