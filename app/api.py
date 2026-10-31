@@ -246,6 +246,8 @@ def get_pitch(job_id: str, stem: str):
 class NotesParams(BaseModel):
     """GAME 推理参数 + 导出曲速。语义与 OpenUtau 的转录界面一致。"""
 
+    # True = 由原曲自动判断曲速；False 才用手填的 tempo
+    auto_tempo: bool = True
     tempo: float = Field(default=120.0, gt=0, le=400)
     sampling_steps: int = Field(default=8, ge=1, le=16)
     boundary_threshold: float = Field(default=0.1, gt=0, le=1)

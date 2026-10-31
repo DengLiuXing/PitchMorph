@@ -37,7 +37,9 @@ export type RefineState = PitchState
 
 /** GAME 推理参数，语义与 OpenUtau 的转录界面一致 */
 export interface NotesParams {
-  /** 导出用的曲速 */
+  /** true = 由原曲自动判断曲速，false 才用手填的 tempo */
+  auto_tempo: boolean
+  /** 导出用的曲速（手动模式） */
   tempo: number
   /** 采样步数 */
   sampling_steps: number
@@ -58,6 +60,8 @@ export interface NotesParams {
 export interface NotesState extends PitchState {
   /** 用户提交时填的参数，导出时复用其中的曲速 */
   params?: NotesParams
+  /** 这次提取最终采用的曲速（自动判断失败时是手填值的回退），就绪后才有 */
+  tempo?: number
 }
 
 export interface NotesPayload {

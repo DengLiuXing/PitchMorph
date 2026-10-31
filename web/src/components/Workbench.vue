@@ -112,7 +112,8 @@ watch(
     for (const [name, entry] of Object.entries(value ?? {})) {
       if (entry.state === 'ready' && !announcedNotes.value[name]) {
         announcedNotes.value[name] = true
-        showToast(`${name} 的音符已就绪：轨道菜单里可导出 OpenUtau 工程或 MIDI`)
+        const tempo = entry.tempo ? `（曲速 ${entry.tempo} BPM）` : ''
+        showToast(`${name} 的音符已就绪${tempo}：轨道菜单里可导出 OpenUtau 工程或 MIDI`)
       }
       if (entry.state === 'failed' && !announcedNotes.value[name]) {
         announcedNotes.value[name] = true
@@ -763,6 +764,7 @@ onBeforeUnmount(() => {
         :stem="notesDialog.stem"
         :languages="notesLanguages"
         :busy="notesBusy"
+        :previous-tempo="props.job.notes?.[notesDialog.stem]?.tempo"
         @close="notesDialog = null"
         @submit="submitNotes"
       />

@@ -1,16 +1,24 @@
 <script setup lang="ts">
 import { X } from 'lucide-vue-next'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 import type { NotesParams } from '@/api/types'
 import MdBottomSheet from '@/components/MdBottomSheet.vue'
+import MdSegmented from '@/components/MdSegmented.vue'
 
-defineProps<{ stem: string; languages: string[]; busy?: boolean }>()
+const props = defineProps<{
+  stem: string
+  languages: string[]
+  busy?: boolean
+  /** 上次提取采用的曲速：重开弹层时当天填值用 */
+  previousTempo?: number
+}>()
 const emit = defineEmits<{ (event: 'close'): void; (event: 'submit', params: NotesParams): void }>()
 
 /** 默认值与 OpenUtau 的转录界面一致 */
 const params = ref<NotesParams>({
-  tempo: 120,
+  auto_tempo: true,
+  tempo: props.previousTempo ?? 120,
   sampling_steps: 8,
   boundary_threshold: 0.1,
   boundary_radius: 1,
@@ -21,6 +29,18 @@ const params = ref<NotesParams>({
 })
 
 const STEP_OPTIONS = [1, 2, 4, 8, 16]
+
+const TEMPO_MODES = [
+  { value: 'auto', label: '自动判断' },
+  { value: 'manual', label: '手动填写' },
+]
+
+const tempoMode = computed({
+  get: () => (params.value.auto_tempo ? 'auto' : 'manual'),
+  set: (value: string) => {
+    params.value.auto_tempo = value === 'auto'
+  },
+})
 
 const field =
   'w-full rounded-md border border-outline bg-surface-container px-3 py-2 text-on-surface focus:border-primary focus:outline-none'
@@ -41,10 +61,26 @@ function submit(): void {
     </template>
 
     <div class="flex flex-col gap-3">
-      <label class="flex flex-col gap-1">
+      <div class="flex flex-col gap-1">
         <span :class="label">曲速 BPM（导出 USTX / MIDI 用）</span>
-        <input v-model.number="params.tempo" type="number" min="20" max="400" step="1" :class="field" />
-      </label>
+        <MdSegmented v-model="tempoMode" :options="TEMPO_MODES" label="曲速来源" />
+        <input
+          v-model.number="params.tempo"
+          type="number"
+          min="20"
+          max="400"
+          step="1"
+          :class="field"
+          :disabled="params.auto_tempo"
+        />
+        <span class="md-body-small text-on-surface-variant">
+          {{
+            params.auto_tempo
+              ? '由原曲混音估算节拍，写入导出的 USTX / MIDI；估不出来时回退上面的手填值'
+              : '使用上方手填的曲速'
+          }}
+        </span>
+      </div>
 
       <label class="flex flex-col gap-1">
         <span :class="label">采样步数（越大越准，也越慢）</span>

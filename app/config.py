@@ -46,6 +46,18 @@ NOTES_BATCH_SIZE = 1
 NOTES_MAX_BATCH_DURATION = 60.0
 NOTES_DEFAULT_TEMPO = 120.0
 
+# 曲速自动判断（app/tempo.py）：22.05 kHz、1024/256 的 STFT 对应 86 帧/秒起音包络
+TEMPO_SAMPLE_RATE = 22050
+TEMPO_N_FFT = 1024
+TEMPO_HOP = 256
+TEMPO_BPM_MIN = 40.0
+TEMPO_BPM_MAX = 240.0
+# 倍速/半速歧义用 120 BPM 附近的对数正态先验来裁决（宽度以八度为单位）
+TEMPO_PRIOR_CENTER = 120.0
+TEMPO_PRIOR_OCTAVES = 0.9
+# 打分时同时看第 1~4 谐波（节拍周期及其整数倍），权重 1/m
+TEMPO_HARMONICS = (1, 2, 3, 4)
+
 # 人声提纯产物：lead = 人声主体（含主旋律与和声），backing = 被剥离的伴奏残差
 REFINE_ROLES = ("lead", "backing")
 

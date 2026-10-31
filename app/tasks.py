@@ -435,6 +435,21 @@ class JobManager:
             self._save(job_id)
         logger.info("提纯完成 id=%s stem=%s", job_id, stem)
 
+    def _detect_tempo(self, directory: Path, stem_audio, fallback: float) -> float:
+        """曲速：优先用原始混音（鼓与贝斯最清楚），缺失时退回该音轨。
+
+        判断不出来不该让整次提取失败——回退手填值并留日志。
+        """
+        from . import tempo as tempo_module
+
+        mix_path = directory / "source.wav"
+        try:
+            audio_44k = audio.read_wav(mix_path)[0] if mix_path.exists() else stem_audio
+            return tempo_module.detect_tempo(audio_44k)
+        except ValueError as exc:
+            logger.warning("曲速自动判断失败，回退 %.1f BPM：%s", fallback, exc)
+            return fallback
+
     def _run_notes(self, job_id: str, stem: str, params: dict) -> None:
         """GAME 音符提取：写 notes_{stem}.json（边界与音高都来自 GAME，OpenUtau 同口径）。"""
         from . import game, notes as notes_module
@@ -517,12 +532,15 @@ class JobManager:
             pitch_path.write_text(
                 json.dumps(curve, separators=(",", ":")), encoding="utf-8"
             )
+        tempo = float(params.get("tempo", config.NOTES_DEFAULT_TEMPO))
+        if params.get("auto_tempo", True):
+            tempo = self._detect_tempo(directory, source, tempo)
         payload = notes_module.build_payload(
             segments,
             curve,
             stem=stem,
             model="GAME-1.0.3-medium",
-            tempo=float(params.get("tempo", config.NOTES_DEFAULT_TEMPO)),
+            tempo=tempo,
             params=params,
         )
         (directory / f"notes_{stem}.json").write_text(
@@ -535,12 +553,19 @@ class JobManager:
             current.setdefault("notes", {})[stem] = {
                 "state": "ready",
                 "fraction": 1.0,
+                "tempo": tempo,
                 "params": params,
             }
             current["state"] = "ready"
             current["message"] = "音符提取完成"
             self._save(job_id)
-        logger.info("音符提取完成 id=%s stem=%s 音符=%d", job_id, stem, len(payload["segments"]))
+        logger.info(
+            "音符提取完成 id=%s stem=%s 音符=%d 曲速=%.1f",
+            job_id,
+            stem,
+            len(payload["segments"]),
+            tempo,
+        )
 
 
 manager = JobManager()
