@@ -28,6 +28,25 @@ PITCH_THRESHOLD = 0.33
 STEMS_FOUR = ("drums", "bass", "other", "vocals")
 STEM_ORDER_OUT = ("vocals", "drums", "bass", "other")
 
+# 分离档位
+MODE_VOCALS = "vocals"  # 仅人声：ft 人声专家
+MODE_FAST = "fast"  # 快速四轨：单文件 htdemucs，一次前向出 4 轨
+MODE_QUALITY = "quality"  # 质量四轨：4 个 ft 专家串行
+MODES = (MODE_VOCALS, MODE_FAST, MODE_QUALITY)
+
+# GAME 推理参数（语义与 OpenUtau 的转录界面一致）
+NOTES_SAMPLING_STEPS = (1, 2, 4, 8, 16)
+NOTES_DEFAULT_SAMPLING_STEPS = 8
+NOTES_BOUNDARY_THRESHOLD = 0.2
+NOTES_BOUNDARY_RADIUS = 2
+NOTES_SCORE_THRESHOLD = 0.2
+NOTES_BATCH_SIZE = 1
+NOTES_MAX_BATCH_DURATION = 60.0
+NOTES_DEFAULT_TEMPO = 120.0
+
+# 人声提纯产物：lead = 人声主体（含主旋律与和声），backing = 被剥离的伴奏残差
+REFINE_ROLES = ("lead", "backing")
+
 JOB_STATES = ("queued", "decoding", "separating", "separated", "pitching", "ready", "failed", "cancelled")
 
 # 分轨完成后自动为每条轨排音高任务；关掉则只按前端请求算

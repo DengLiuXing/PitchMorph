@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import audio, pitch, separate
+from . import audio, config, pitch, separate
 from .config import AUTO_PITCH, DATA_DIR, MAX_DURATION_S, SAMPLE_RATE
 from .errors import JobCancelled
 
@@ -59,6 +59,10 @@ class JobManager:
                     self._run_separate(job_id)
                 elif kind == "pitch":
                     self._run_pitch(job_id, payload["stem"])
+                elif kind == "refine":
+                    self._run_refine(job_id, payload["stem"])
+                elif kind == "notes":
+                    self._run_notes(job_id, payload["stem"], payload["params"])
             except JobCancelled:
                 self._finish(job_id, "cancelled", failure="已取消")
             except Exception as exc:  # 业务失败统一转成可读原因
@@ -159,6 +163,8 @@ class JobManager:
             "finished": None,
             "stems": [],
             "pitch": {},
+            "refine": {},
+            "notes": {},
             "ep": None,
             "duration": None,
         }
@@ -177,6 +183,24 @@ class JobManager:
         meta.setdefault("pitch", {})[stem] = {"state": "queued", "fraction": 0.0}
         self._save(job_id)
         self._queue.put((job_id, "pitch", {"stem": stem}))
+        self.start()
+
+    def submit_refine(self, job_id: str, stem: str) -> None:
+        meta = self._meta.get(job_id)
+        if meta is None:
+            return
+        meta.setdefault("refine", {})[stem] = {"state": "queued", "fraction": 0.0}
+        self._save(job_id)
+        self._queue.put((job_id, "refine", {"stem": stem}))
+        self.start()
+
+    def submit_notes(self, job_id: str, stem: str, params: dict) -> None:
+        meta = self._meta.get(job_id)
+        if meta is None:
+            return
+        meta.setdefault("notes", {})[stem] = {"state": "queued", "fraction": 0.0, "params": params}
+        self._save(job_id)
+        self._queue.put((job_id, "notes", {"stem": stem, "params": params}))
         self.start()
 
     def cancel(self, job_id: str) -> None:
@@ -313,6 +337,176 @@ class JobManager:
             m["message"] = "音高计算完成"
             self._save(job_id)
         logger.info("音高任务完成 id=%s stem=%s frames=%d", job_id, stem, len(curve["f0"]))
+
+    def _run_refine(self, job_id: str, stem: str) -> None:
+        """人声提纯：产出 lead / backing 两条派生轨，追加进 meta.stems。"""
+        from . import refine
+
+        meta = self._meta[job_id]
+        directory = self.job_dir(job_id)
+        source_file = directory / f"{stem}.wav"
+        if not source_file.exists():
+            raise ValueError(f"音轨不存在：{stem}")
+        source, _ = audio.read_wav(source_file)
+        self._progress(job_id, "refining", f"{stem}：提纯中", 0.05)
+
+        def on_progress(value: float) -> None:
+            with self._lock:
+                current = self._meta.get(job_id)
+                if current is None:
+                    return
+                current.setdefault("refine", {})[stem] = {
+                    "state": "running",
+                    "fraction": round(value, 3),
+                }
+                current["fraction"] = round(value, 3)
+                self._save(job_id)
+
+        try:
+            results = refine.refine(
+                source,
+                on_progress=on_progress,
+                should_cancel=self._should_cancel(job_id),
+            )
+        except JobCancelled:
+            raise
+        except Exception as exc:  # 提纯失败不影响已经分好的轨
+            with self._lock:
+                current = self._meta.get(job_id)
+                if current is not None:
+                    current.setdefault("refine", {})[stem] = {
+                        "state": "failed",
+                        "fraction": 0.0,
+                        "failure": str(exc),
+                    }
+                    current["state"] = "ready"
+                    current["message"] = f"{stem} 提纯失败"
+                    self._save(job_id)
+            logger.warning("提纯失败 id=%s stem=%s %s", job_id, stem, exc)
+            return
+
+        entries = list(meta.get("stems") or [])
+        for role in config.REFINE_ROLES:
+            name = f"{stem}_{role}"
+            track = results[role]
+            wav = audio.write_wav(directory / f"{name}.wav", track)
+            peaks = audio.wave_peaks(track, 2000)
+            (directory / f"{name}.peaks.json").write_text(
+                json.dumps(peaks, separators=(",", ":")), encoding="utf-8"
+            )
+            entries.append(
+                {
+                    "name": name,
+                    "file": wav.name,
+                    "duration": round(track.shape[1] / config.SAMPLE_RATE, 3),
+                    "derived_from": stem,
+                    "role": role,
+                }
+            )
+        with self._lock:
+            current = self._meta.get(job_id)
+            if current is None:
+                return
+            current["stems"] = entries
+            current.setdefault("refine", {})[stem] = {"state": "ready", "fraction": 1.0}
+            current["state"] = "ready"
+            current["message"] = "提纯完成"
+            self._save(job_id)
+        logger.info("提纯完成 id=%s stem=%s", job_id, stem)
+
+    def _run_notes(self, job_id: str, stem: str, params: dict) -> None:
+        """GAME 音符提取：写 notes_{stem}.json（边界来自 GAME，音高来自 FCPE 段内中位数）。"""
+        from . import game, notes as notes_module
+
+        meta = self._meta[job_id]
+        directory = self.job_dir(job_id)
+        source_file = directory / f"{stem}.wav"
+        if not source_file.exists():
+            raise ValueError(f"音轨不存在：{stem}")
+        source, _ = audio.read_wav(source_file)
+        mono = source.mean(axis=0) if source.ndim > 1 else source
+        self._progress(job_id, "noting", f"{stem}：提取音符", 0.05)
+
+        def on_progress(value: float) -> None:
+            with self._lock:
+                current = self._meta.get(job_id)
+                if current is None:
+                    return
+                current.setdefault("notes", {})[stem] = {
+                    "state": "running",
+                    "fraction": round(value, 3),
+                    "params": params,
+                }
+                current["fraction"] = round(value, 3)
+                self._save(job_id)
+
+        try:
+            segments = game.extract_notes(
+                mono,
+                sampling_steps=int(params.get("sampling_steps", config.NOTES_DEFAULT_SAMPLING_STEPS)),
+                boundary_threshold=float(
+                    params.get("boundary_threshold", config.NOTES_BOUNDARY_THRESHOLD)
+                ),
+                boundary_radius=int(params.get("boundary_radius", config.NOTES_BOUNDARY_RADIUS)),
+                score_threshold=float(params.get("score_threshold", config.NOTES_SCORE_THRESHOLD)),
+                batch_size=int(params.get("batch_size", config.NOTES_BATCH_SIZE)),
+                max_batch_duration=float(
+                    params.get("max_batch_duration", config.NOTES_MAX_BATCH_DURATION)
+                ),
+                language=params.get("language") or None,
+                should_cancel=self._should_cancel(job_id),
+                on_progress=on_progress,
+            )
+        except JobCancelled:
+            raise
+        except Exception as exc:  # 音符提取失败不影响分轨结果
+            with self._lock:
+                current = self._meta.get(job_id)
+                if current is not None:
+                    current.setdefault("notes", {})[stem] = {
+                        "state": "failed",
+                        "fraction": 0.0,
+                        "failure": str(exc),
+                        "params": params,
+                    }
+                    current["state"] = "ready"
+                    current["message"] = f"{stem} 音符提取失败"
+                    self._save(job_id)
+            logger.warning("音符提取失败 id=%s stem=%s %s", job_id, stem, exc)
+            return
+
+        pitch_path = directory / f"pitch_{stem}.json"
+        if pitch_path.exists():
+            curve = json.loads(pitch_path.read_text(encoding="utf-8"))
+        else:
+            curve = pitch.pitch_file(source_file)
+            pitch_path.write_text(
+                json.dumps(curve, separators=(",", ":")), encoding="utf-8"
+            )
+        payload = notes_module.build_payload(
+            segments,
+            curve,
+            stem=stem,
+            model="GAME-1.0.3-medium",
+            tempo=float(params.get("tempo", config.NOTES_DEFAULT_TEMPO)),
+            params=params,
+        )
+        (directory / f"notes_{stem}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+        )
+        with self._lock:
+            current = self._meta.get(job_id)
+            if current is None:
+                return
+            current.setdefault("notes", {})[stem] = {
+                "state": "ready",
+                "fraction": 1.0,
+                "params": params,
+            }
+            current["state"] = "ready"
+            current["message"] = "音符提取完成"
+            self._save(job_id)
+        logger.info("音符提取完成 id=%s stem=%s 音符=%d", job_id, stem, len(payload["segments"]))
 
 
 manager = JobManager()

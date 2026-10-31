@@ -1,4 +1,4 @@
-import type { EngineStatus, JobMeta, Mode, Peaks, PitchCurve } from './types'
+import type { EngineStatus, JobMeta, Mode, NotesParams, NotesPayload, Peaks, PitchCurve } from './types'
 
 const READ_TIMEOUT = 15_000
 // 200 MB 在慢盘上要几十秒，读接口的 15 s 不够
@@ -47,6 +47,29 @@ export const api = {
   /** 还没算完时后端只回 {state}，没有曲线本身那些字段 */
   pitch: (id: string, stem: string) =>
     request<PitchCurve & { state?: string }>(`/api/jobs/${id}/pitch/${stem}`),
+
+  /** 起提纯任务：产出人声主体与伴奏残留两条派生轨 */
+  startRefine: (id: string, stem: string) =>
+    request<{ ok: boolean; state: string }>(`/api/jobs/${id}/refine/${stem}`, { method: 'POST' }),
+
+  /** 起音符提取任务，参数由用户填 */
+  startNotes: (id: string, stem: string, params: NotesParams) =>
+    request<{ ok: boolean; state: string }>(`/api/jobs/${id}/notes/${stem}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    }),
+
+  /** 音符数据；还没算完时后端只回 {state} */
+  notes: (id: string, stem: string) =>
+    request<Partial<NotesPayload> & { state?: string }>(`/api/jobs/${id}/notes/${stem}`),
+
+  /** 导出地址：OpenUtau 工程 / MIDI */
+  notesExportUrl: (id: string, stem: string, fmt: 'ustx' | 'mid') =>
+    `/api/jobs/${id}/export/notes/${stem}.${fmt}`,
+
+  /** GAME 权重支持的语言（通用 + en/ja/yue/zh） */
+  languages: () => request<{ languages: string[] }>('/api/languages'),
 
   audioUrl: (id: string, name: string) => `/api/jobs/${id}/audio/${name}`,
 

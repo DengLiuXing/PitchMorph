@@ -3,9 +3,10 @@ import { AlertTriangle, ChevronDown, Download, Loader2, Maximize2, Minus, Plus }
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
-import type { JobMeta, Peaks, PitchCurve } from '@/api/types'
-import { STEM_LABELS, isActive, stemRank } from '@/api/types'
+import type { JobMeta, NotesParams, Peaks, PitchCurve } from '@/api/types'
+import { isActive, stemLabel, stemRank } from '@/api/types'
 import MdIconButton from '@/components/MdIconButton.vue'
+import NotesDialog from '@/components/NotesDialog.vue'
 import MdSlider from '@/components/MdSlider.vue'
 import PitchMonitor from '@/components/PitchMonitor.vue'
 import RulerLane from '@/components/RulerLane.vue'
@@ -65,13 +66,61 @@ const monitor = ref<string | null>(null)
 /** 轨头操作菜单（fixed 浮层，不撑开轨头） */
 const menu = ref<{ name: string; x: number; y: number } | null>(null)
 
+/** 音符参数弹层：null 表示没打开 */
+const notesDialog = ref<{ stem: string } | null>(null)
+const notesLanguages = ref<string[]>([])
+const notesBusy = ref(false)
+
+/** 提纯只对人声轨与它的派生轨有意义 */
+function canRefine(name: string): boolean {
+  return name === 'vocals' || name.endsWith('_lead') || name.endsWith('_backing')
+}
+
+/** 这条轨的音符算完了才能导出 */
+function notesReady(name: string): boolean {
+  return props.job.notes?.[name]?.state === 'ready'
+}
+
+async function startRefine(name: string): Promise<void> {
+  try {
+    await api.startRefine(props.job.id, name)
+    emit('refresh')
+  } catch (issue) {
+    notice.value = (issue as Error).message
+  }
+}
+
+function openNotes(name: string): void {
+  notesDialog.value = { stem: name }
+}
+
+async function submitNotes(params: NotesParams): Promise<void> {
+  if (!notesDialog.value) return
+  notesBusy.value = true
+  try {
+    await api.startNotes(props.job.id, notesDialog.value.stem, params)
+    notesDialog.value = null
+    emit('refresh')
+  } catch (issue) {
+    notice.value = (issue as Error).message
+  } finally {
+    notesBusy.value = false
+  }
+}
+
+function exportNotes(fmt: 'ustx' | 'mid'): void {
+  if (!menu.value) return
+  window.location.href = api.notesExportUrl(props.job.id, menu.value.name, fmt)
+}
+
+
 const tracks = computed(() =>
   // 按后端返回的 stems 渲染：「仅人声」档只有一条，写死四条会渲染出 404 空轨
   [...props.job.stems]
     .sort((left, right) => stemRank(left.name) - stemRank(right.name))
     .map((stem) => ({
       name: stem.name,
-      label: STEM_LABELS[stem.name] ?? stem.name,
+      label: stemLabel(stem.name),
       color: stemColor(stem.name),
       url: api.stemUrl(props.job.id, stem.name),
       downloadName: api.downloadName(props.job.filename, stem.name),
@@ -89,7 +138,7 @@ const fitPps = computed(() =>
 )
 const gridStep = computed(() => Math.max(8, tickStep(pps.value) * pps.value))
 const hint = computed(() => {
-  if (solo.value.length > 0) return `${solo.value.map((name) => STEM_LABELS[name] ?? name).join(' + ')} solo`
+  if (solo.value.length > 0) return `${solo.value.map((name) => stemLabel(name)).join(' + ')} solo`
   if (muted.value.length > 0) return `静音 ${muted.value.length} 轨`
   return `${tracks.value.length} 轨混音`
 })
@@ -302,6 +351,7 @@ onMounted(() => {
   measure()
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('resize', measure)
+  api.languages().then((data) => (notesLanguages.value = data.languages)).catch(() => undefined)
 })
 
 onBeforeUnmount(() => {
@@ -501,8 +551,23 @@ onBeforeUnmount(() => {
       :x="menu.x"
       :y="menu.y"
       :pitch-on="monitor === menu.name"
+      :can-refine="canRefine(menu.name)"
+      :can-notes="true"
+      :notes-ready="notesReady(menu.name)"
       @pitch="toggleMonitor(menu.name)"
+      @refine="startRefine(menu.name); menu = null"
+      @notes="openNotes(menu.name); menu = null"
+      @export="exportNotes"
       @close="menu = null"
     />
   </div>
+
+    <NotesDialog
+      v-if="notesDialog"
+      :stem="notesDialog.stem"
+      :languages="notesLanguages"
+      :busy="notesBusy"
+      @close="notesDialog = null"
+      @submit="submitNotes"
+    />
 </template>

@@ -1,10 +1,26 @@
 <script setup lang="ts">
-import { Activity, FolderDown, Music2, Sparkles } from 'lucide-vue-next'
+import { Activity, FileAudio, FolderDown, Music2, Sparkles } from 'lucide-vue-next'
 
 import MdMenu from '@/components/MdMenu.vue'
 
-defineProps<{ x: number; y: number; pitchOn: boolean }>()
-const emit = defineEmits<{ (event: 'pitch'): void; (event: 'close'): void }>()
+defineProps<{
+  x: number
+  y: number
+  pitchOn: boolean
+  /** 提纯只对 vocals 与它的派生轨有意义 */
+  canRefine: boolean
+  /** 音符提取需要这条轨已经分好 */
+  canNotes: boolean
+  /** 导出要等音符算完 */
+  notesReady: boolean
+}>()
+const emit = defineEmits<{
+  (event: 'pitch'): void
+  (event: 'refine'): void
+  (event: 'notes'): void
+  (event: 'export', fmt: 'ustx' | 'mid'): void
+  (event: 'close'): void
+}>()
 </script>
 
 <template>
@@ -23,20 +39,47 @@ const emit = defineEmits<{ (event: 'pitch'): void; (event: 'close'): void }>()
 
     <div class="md-menu-sep" />
 
-    <button type="button" class="md-menu-item" role="menuitem" disabled title="下一轮">
+    <button
+      type="button"
+      class="md-menu-item"
+      role="menuitem"
+      :disabled="!canRefine"
+      :title="canRefine ? '' : '只对人声轨可用'"
+      @click="emit('refine')"
+    >
       <Sparkles :size="18" />
       人声提纯
-      <span class="md-menu-flag">soon</span>
+      <span class="md-menu-flag">lead + backing</span>
     </button>
-    <button type="button" class="md-menu-item" role="menuitem" disabled title="下一轮">
+    <button
+      type="button"
+      class="md-menu-item"
+      role="menuitem"
+      :disabled="!canNotes"
+      @click="emit('notes')"
+    >
       <Music2 :size="18" />
       提取音符
-      <span class="md-menu-flag">soon</span>
     </button>
-    <button type="button" class="md-menu-item" role="menuitem" disabled title="下一轮">
+    <button
+      type="button"
+      class="md-menu-item"
+      role="menuitem"
+      :disabled="!notesReady"
+      @click="emit('export', 'ustx')"
+    >
       <FolderDown :size="18" />
-      导出工程
-      <span class="md-menu-flag">soon</span>
+      导出 OpenUtau 工程
+    </button>
+    <button
+      type="button"
+      class="md-menu-item"
+      role="menuitem"
+      :disabled="!notesReady"
+      @click="emit('export', 'mid')"
+    >
+      <FileAudio :size="18" />
+      导出 MIDI
     </button>
   </MdMenu>
 </template>

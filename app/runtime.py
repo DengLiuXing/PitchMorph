@@ -96,14 +96,26 @@ def status() -> dict[str, Any]:
     }
 
 
-def make_session(model_path: Path) -> tuple[ort.InferenceSession, list[str]]:
-    """按当前 EP 建会话，返回 (session, 实际 provider 列表)。"""
+def make_session(
+    model_path: Path,
+    *,
+    provider_options: dict[str, Any] | None = None,
+    ep: str | None = None,
+) -> tuple[ort.InferenceSession, list[str]]:
+    """按当前 EP 建会话，返回 (session, 实际 provider 列表)。
+
+    provider_options 用于按模型覆盖 CUDA 选项：提纯模型 5 s 块要 5.1 GB 显存，
+    撞上全局 4 GB 的 gpu_mem_limit 会直接失败。
+    """
     preload()
-    ep = resolve_ep()
+    ep = ep or resolve_ep()
     options = ort.SessionOptions()
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     if ep == "cuda":
-        providers: list[Any] = [("CUDAExecutionProvider", CUDA_OPTIONS), "CPUExecutionProvider"]
+        cuda = dict(CUDA_OPTIONS)
+        if provider_options:
+            cuda.update(provider_options)
+        providers: list[Any] = [("CUDAExecutionProvider", cuda), "CPUExecutionProvider"]
     else:
         providers = ["CPUExecutionProvider"]
 
@@ -129,6 +141,22 @@ def release(session: ort.InferenceSession | None) -> None:
 def _category(name: str) -> str:
     """会话分类：heavy = demucs（显存大户），light = FCPE 之类的小图。"""
     return "light" if "fcpe" in name.lower() else "heavy"
+
+
+def purge(category: str | None = None) -> None:
+    """清掉缓存里的会话并立刻回收显存。
+
+    提纯任务开始前要先把 demucs 会话放掉：提纯模型 5 s 块吃 5.1 GB，
+    与 demucs 的 3.2 GB 叠加会顶爆 8 GB 卡。
+    """
+    if not _CACHE_ENABLED:
+        return
+    for key in list(_CACHED):
+        if category and _category(Path(key).name) != category:
+            continue
+        session = _CACHED.pop(key)
+        del session
+    gc.collect()
 
 
 def acquire(model_path: Path) -> ort.InferenceSession:

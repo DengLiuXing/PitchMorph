@@ -10,10 +10,11 @@ import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
 from urllib.parse import quote
 
-from . import runtime
+from . import export_formats, notes as notes_module, registry, runtime
 from .config import DATA_DIR, MAX_UPLOAD_MB
 from .tasks import manager
 
@@ -240,3 +241,109 @@ def get_pitch(job_id: str, stem: str):
         state = meta.get("pitch", {}).get(stem, {}).get("state", "idle")
         return JSONResponse({"state": state})
     return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+
+
+class NotesParams(BaseModel):
+    """GAME 推理参数 + 导出曲速。语义与 OpenUtau 的转录界面一致。"""
+
+    tempo: float = Field(default=120.0, gt=0, le=400)
+    sampling_steps: int = Field(default=8, ge=1, le=16)
+    boundary_threshold: float = Field(default=0.2, gt=0, le=1)
+    boundary_radius: int = Field(default=2, ge=1, le=20)
+    score_threshold: float = Field(default=0.2, gt=0, le=1)
+    batch_size: int = Field(default=1, ge=1, le=16)
+    max_batch_duration: float = Field(default=60.0, ge=0, le=600)
+    language: str | None = None
+
+
+def _available_languages() -> list[str]:
+    try:
+        location = registry.ensure_bundle(registry.GAME_BUNDLE_KEY)
+        payload = json.loads((location / "config.json").read_text(encoding="utf-8"))
+        return sorted(payload.get("languages") or {})
+    except Exception:
+        return []
+
+
+@router.get("/languages")
+def languages() -> dict:
+    return {"languages": _available_languages()}
+
+
+@router.post("/jobs/{job_id}/refine/{stem}")
+def start_refine(job_id: str, stem: str) -> dict:
+    meta = _require(job_id)
+    available = {entry["name"] for entry in meta.get("stems", [])}
+    if stem not in available:
+        raise HTTPException(status_code=404, detail="该音轨不存在")
+    state = (meta.get("refine") or {}).get(stem, {}).get("state")
+    if state in ("queued", "running"):
+        return {"ok": True, "state": state}
+    manager.submit_refine(job_id, stem)
+    return {"ok": True, "state": "queued"}
+
+
+@router.post("/jobs/{job_id}/notes/{stem}")
+def start_notes(job_id: str, stem: str, params: NotesParams) -> dict:
+    meta = _require(job_id)
+    available = {entry["name"] for entry in meta.get("stems", [])}
+    if stem not in available:
+        raise HTTPException(status_code=404, detail="该音轨不存在")
+    if params.language:
+        supported = _available_languages()
+        if supported and params.language not in supported:
+            raise HTTPException(
+                status_code=400,
+                detail=f"该权重不支持语言 {params.language!r}，可选 {supported}",
+            )
+    state = (meta.get("notes") or {}).get(stem, {}).get("state")
+    if state in ("queued", "running"):
+        return {"ok": True, "state": state}
+    manager.submit_notes(job_id, stem, params.model_dump())
+    return {"ok": True, "state": "queued"}
+
+
+@router.get("/jobs/{job_id}/notes/{stem}")
+def get_notes(job_id: str, stem: str):
+    directory = manager.job_dir(job_id)
+    path = directory / f"notes_{stem}.json"
+    if not path.exists():
+        meta = _require(job_id)
+        state = (meta.get("notes") or {}).get(stem, {}).get("state", "idle")
+        return JSONResponse({"state": state})
+    return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+
+
+@router.get("/jobs/{job_id}/export/notes/{stem}.{fmt}")
+def export_notes(job_id: str, stem: str, fmt: str):
+    meta = _require(job_id)
+    directory = manager.job_dir(job_id)
+    notes_path = directory / f"notes_{stem}.json"
+    if not notes_path.exists():
+        raise HTTPException(status_code=404, detail="还没有音符数据")
+    pitch_path = directory / f"pitch_{stem}.json"
+    if not pitch_path.exists():
+        raise HTTPException(status_code=404, detail="还没有音高曲线")
+    payload = json.loads(notes_path.read_text(encoding="utf-8"))
+    curve = json.loads(pitch_path.read_text(encoding="utf-8"))
+    segments = payload.get("segments") or []
+    cents = notes_module.to_cents(curve["f0"], curve["voiced"])
+    hop_sec = float(payload.get("hop_ms", 10)) / 1000.0
+    tempo = float(payload.get("tempo", 120.0))
+    filename = f"{source_base(meta)}_{stem}.{fmt}"
+    disposition = f"attachment; filename*=UTF-8''{quote(filename)}"
+    if fmt == "ustx":
+        text = export_formats.to_ustx(cents, segments, hop_sec=hop_sec, bpm=tempo)
+        return Response(
+            text,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": disposition},
+        )
+    if fmt == "mid":
+        data = export_formats.to_midi(cents, segments, hop_sec=hop_sec, bpm=tempo)
+        return Response(
+            data,
+            media_type="audio/midi",
+            headers={"Content-Disposition": disposition},
+        )
+    raise HTTPException(status_code=404, detail="只支持 ustx 与 mid")

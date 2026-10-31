@@ -1,8 +1,6 @@
 # 权重与素材：体积大、许可各异，一律不入库
-# 例外：FCPE 上游只发 PyTorch，官方无 ONNX、网上拿不到，是全项目唯一不可再生产物，必须入库
+# 所有权重都由 registry 自动下载 + 校验（含社区模型，存 models/community/ 下归档）
 models/*
-!models/fcpe_net.onnx
-!models/fcpe_net.npz
 samples/
 
 # 依赖与构建产物

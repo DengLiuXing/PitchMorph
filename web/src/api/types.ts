@@ -19,6 +19,10 @@ export interface StemEntry {
   name: string
   file: string
   duration: number
+  /** 派生轨：它来自哪条轨（如 vocals） */
+  derived_from?: string
+  /** 派生轨角色：lead = 人声主体，backing = 伴奏残留 */
+  role?: string
 }
 
 export interface PitchState {
@@ -26,6 +30,45 @@ export interface PitchState {
   fraction: number
   /** 只有 failed 时后端才写 */
   failure?: string
+}
+
+/** 提纯（人声主体 / 伴奏残留）的任务状态 */
+export type RefineState = PitchState
+
+/** GAME 推理参数，语义与 OpenUtau 的转录界面一致 */
+export interface NotesParams {
+  /** 导出用的曲速 */
+  tempo: number
+  /** 采样步数 */
+  sampling_steps: number
+  /** 边界阈值 */
+  boundary_threshold: number
+  /** 边界半径（帧） */
+  boundary_radius: number
+  /** 分数阈值 */
+  score_threshold: number
+  /** 并行大小：一批喂给模型的切片数 */
+  batch_size: number
+  /** 最大并行持续时间：一批内所有切片的总秒数上限，0 = 不限 */
+  max_batch_duration: number
+  /** 语言代码，null = 通用 */
+  language: string | null
+}
+
+export interface NotesState extends PitchState {
+  /** 用户提交时填的参数，导出时复用其中的曲速 */
+  params?: NotesParams
+}
+
+export interface NotesPayload {
+  version: number
+  model: string
+  stem: string
+  hop_ms: number
+  tempo: number
+  params: NotesParams
+  segments: { start_sec: number; dur_sec: number; midi: number; cents_offset: number }[]
+  model_segments: { start_sec: number; dur_sec: number; midi: number; voiced: boolean }[]
 }
 
 export interface JobMeta {
@@ -44,6 +87,10 @@ export interface JobMeta {
   finished?: number | null
   stems: StemEntry[]
   pitch: Record<string, PitchState>
+  /** 提纯任务状态，按轨名索引 */
+  refine: Record<string, RefineState>
+  /** 音符提取任务状态，按轨名索引 */
+  notes: Record<string, NotesState>
   /** 设备实际用的推理后端，解码后才有值 */
   ep: string | null
   duration: number | null
@@ -99,12 +146,31 @@ export const STEM_LABELS: Record<string, string> = {
   source: '原始音频',
 }
 
+/** 派生轨（提纯产物）没有固定文案，按角色拼：人声主体 / 伴奏残留 */
+export function stemLabel(name: string): string {
+  const direct = STEM_LABELS[name]
+  if (direct) return direct
+  const match = name.match(/^(.*)_(lead|backing)$/)
+  if (match) {
+    const base = STEM_LABELS[match[1]] ?? match[1]
+    return match[2] === 'lead' ? `${base}主体` : `${base}残留`
+  }
+  return name
+}
+
 /** 人声永远置顶：提纯/音符/工程都挂在它身上 */
 export const STEM_ORDER = ['vocals', 'drums', 'bass', 'other']
 
 export function stemRank(name: string): number {
   const index = STEM_ORDER.indexOf(name)
-  return index < 0 ? STEM_ORDER.length : index
+  if (index >= 0) return index
+  // 派生轨紧跟在它来源轨后面：人声主体 -> 伴奏残留
+  const match = name.match(/^(.*)_(lead|backing)$/)
+  if (match) {
+    const base = STEM_ORDER.indexOf(match[1])
+    if (base >= 0) return base + (match[2] === 'lead' ? 0.1 : 0.2)
+  }
+  return STEM_ORDER.length
 }
 
 export const MODE_LABELS: Record<Mode, string> = {
