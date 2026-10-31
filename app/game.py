@@ -44,11 +44,6 @@ SLICE_MAX_SIL_KEPT = 10  # 帧，0.1 s
 # 单片超长就在能量最低处再切一刀（与 V2 同一套做法）。
 MAX_SLICE_SEC = 30.0
 
-MIDI_MIN = 0.0
-MIDI_MAX = 128.0
-MIDI_STD = 0.5
-
-
 def get_rms(samples: np.ndarray, frame_length: int, hop_length: int) -> np.ndarray:
     """逐帧 RMS（librosa 口径：前后各补半帧，constant 填充）。"""
     padding = int(frame_length // 2)

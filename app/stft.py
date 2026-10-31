@@ -55,7 +55,7 @@ def istft(spec: np.ndarray, length: int, n_fft: int = N_FFT, hop: int = HOP) -> 
 
 def pack_features(spec: np.ndarray, zero_dc: bool = True) -> np.ndarray:
     frames, bins, channels = spec.shape
-    packed = np.zeros((frames, bins * channels * 2), dtype=np.float32)
+    packed = np.zeros((frames, PACKED), dtype=np.float32)
     for channel in range(channels):
         for f in range(bins):
             base = (2 * f + channel) * 2
