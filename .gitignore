@@ -16,3 +16,6 @@ __pycache__/
 # 任务产物与临时目录
 data/
 temp-dev/
+
+# 编辑器/助手目录
+.codebuddy/

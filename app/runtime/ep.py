@@ -1,17 +1,24 @@
-"""EP 探测与降级阶梯：winml → dml → cpu（docs/09-contract.md §7）。
+"""EP 选择：默认全部走 CPU，需要时再用环境变量打开 GPU。
 
-这是全项目唯一提到 WinML 的地方。业务代码只认 `provider_for(ep)` 返回的字符串。
+2026-10-31 的决定是「先把功能在 CPU 上跑通，性能优化留到后面」。实测依据：
+
+- GAME 在 DirectML 上数值等价、segmenter 快 2.5×，是唯一可以放心切 GPU 的模型
+- FCPE 在 DirectML 上主干失真（RPA 28.4%），必须 CPU
+- demucs 在 DirectML 上图融合阶段直接 E_OUTOFMEMORY，跑不起来
+
+所以这里只保留两个入口：默认 `cpu`，以及 `PITCHMORPH_EP=dml` 时给 GAME 用 GPU。
+换运行时只改这个文件。
 """
 
 from __future__ import annotations
 
 import functools
+import os
 
 import onnxruntime as ort
 
-# 当前构建（onnxruntime-windowsml）直接暴露 DmlExecutionProvider；
-# 换成 onnxruntime-directml 时这一行不用改，因为它提供的也是同一个名字。
 _DML = "DmlExecutionProvider"
+_GPU_CAPABLE = {"game"}  # 只有它实测可用
 
 
 @functools.lru_cache(maxsize=1)
@@ -20,16 +27,22 @@ def available() -> tuple[str, ...]:
 
 
 @functools.lru_cache(maxsize=1)
+def requested() -> str:
+    return os.environ.get("PITCHMORPH_EP", "cpu").strip().lower()
+
+
 def detect() -> str:
-    """返回 `winml` / `dml` / `cpu`。`winml` 与 `dml` 目前是同一份 DirectML EP，先返回 winml 以便记录来源。"""
-    if _DML in available():
-        return "winml"
+    """实际会用到的 EP：默认 cpu；只有显式请求且显卡可用时才返回 dml。"""
+    if requested() in ("dml", "winml") and _DML in available():
+        return "dml"
     return "cpu"
 
 
-def provider_for(ep: str | None = None) -> list[str]:
-    chosen = ep or detect()
-    if chosen in ("winml", "dml"):
+def provider_for(model_family: str | None = None) -> list[str]:
+    """`model_family` 用 game / fcpe / demucs。不给就是「按全局设置」。"""
+    if detect() == "cpu":
+        return ["CPUExecutionProvider"]
+    if model_family is None or model_family in _GPU_CAPABLE:
         return [_DML, "CPUExecutionProvider"]
     return ["CPUExecutionProvider"]
 
@@ -39,4 +52,5 @@ def describe() -> dict:
         "detected": detect(),
         "available": list(available()),
         "ort": ort.__version__,
+        "requested": requested(),
     }

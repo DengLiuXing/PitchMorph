@@ -13,6 +13,7 @@ class CreateJob(BaseModel):
     kind: Kind
     parent: str | None = None
     target: str | None = None
+    source: str | None = None
     params: dict = Field(default_factory=dict)
 
 

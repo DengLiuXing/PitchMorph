@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.environ.get("PITCHMORPH_DATA", ROOT / "data" / "jobs"))
+UPLOADS_DIR = Path(os.environ.get("PITCHMORPH_UPLOADS", ROOT / "data" / "uploads"))
 MODELS_DIR = Path(os.environ.get("PITCHMORPH_MODELS", ROOT / "models"))
 WEIGHTS_CACHE = Path(os.environ.get("PITCHMORPH_CACHE", ROOT / "data" / "weights"))
 

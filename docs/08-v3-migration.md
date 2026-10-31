@@ -38,8 +38,9 @@ V2 只提供两样东西——**不可再生的资产**与**用教训换来的�
 | `temp-dev/samples/openutau_official` | 34.4 MB（36 111 990 B，6 个文件） | 两首官方转写（含 188 s 长音频），用于长音频与 USTX 对照；**开发测试用，不入库** |
 | `temp-dev/OpenUtau-master` | 60.1 MB（969 个文件） | OpenUtau 源码，写音符边界与 USTX 导出时**只读参考**；不复制、不 import、不打包 |
 
-> 上表是 **V3 仓库内的实际路径**（2026-10-31 核对）。
-> 唯一的入库例外是 `models/fcpe_net.onnx` 与其 `.npz`：`.gitignore` 用 `models/*` + `!models/fcpe_net.*` 白名单放行，其余仍在 `temp-dev/` 下忽略。
+> 入库的只有 `models/fcpe_net.onnx` 与其 `.npz`（`.gitignore` 用 `models/*` + `!models/fcpe_net.*` 白名单放行）。
+> 其余行里的 `temp-dev/` **不在仓库里**：2026-10-31 已整体移到仓库同级的 `PitchMorph-V3-dev-assets/`，
+> 目的是让刚克隆仓库的人看到的就是可部署状态（不含 1.7 GB 开发资产）。
 
 > **GAME 不再迁移**：官方有 ONNX release，按 `docs/weights.md` 在运行时下载（带 SHA256 校验）。
 > 原则是「官方能下载的不入库；官方没有 ONNX 的自建产物**入库**」（后者目前只有 FCPE；demucs 的权重来自 HF `StemSplitio`，不属于自建）。

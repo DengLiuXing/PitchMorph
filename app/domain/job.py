@@ -31,6 +31,7 @@ class Job:
     params: dict
     parent: str | None = None
     target: str | None = None
+    source: str | None = None  # 上传音频路径；派生 job 从父任务取，不用它
     state: State = "queued"
     warnings: list[str] = field(default_factory=list)
     error: dict | None = None
@@ -63,6 +64,7 @@ class Job:
             "kind": self.kind,
             "parent": self.parent,
             "target": self.target,
+            "source": self.source,
             "params": self.params,
             "state": self.state,
             "warnings": self.warnings,
@@ -81,6 +83,7 @@ class Job:
             params=data.get("params") or {},
             parent=data.get("parent"),
             target=data.get("target"),
+            source=data.get("source"),
             state=data.get("state", "queued"),
             warnings=list(data.get("warnings") or []),
             error=data.get("error"),

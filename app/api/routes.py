@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import shutil
+import uuid
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app import runner
 from app.api.schemas import CreateJob, JobOut, RuntimeOut
+from app.core import config
 from app.domain import params as param_mod
 from app.domain.job import Job
 from app.runtime import ep as ep_mod
@@ -29,6 +33,8 @@ def create_job(body: CreateJob) -> JobOut:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if body.kind != "separate" and not body.parent:
         raise HTTPException(status_code=422, detail="派生任务必须给 parent")
+    if body.kind == "separate" and not body.source:
+        raise HTTPException(status_code=422, detail="分轨任务必须给 source（先调 /api/uploads）")
 
     job = Job(
         id=store.new_id(),
@@ -36,10 +42,22 @@ def create_job(body: CreateJob) -> JobOut:
         params=normalized,
         parent=body.parent,
         target=body.target,
+        source=body.source,
     )
     store.job_dir(job.id).mkdir(parents=True, exist_ok=True)
     runner.submit(job)
     return _to_out(job)
+
+
+@router.post("/uploads")
+async def upload(file: UploadFile = File(...)) -> dict:
+    """上传音频到 data/uploads，返回 job 创建时用的 source。"""
+    config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = Path(file.filename or "audio.wav").suffix or ".wav"
+    dest = config.UPLOADS_DIR / f"{uuid.uuid4().hex[:12]}{suffix}"
+    with dest.open("wb") as handle:
+        shutil.copyfileobj(file.file, handle)
+    return {"source": str(dest), "name": file.filename, "bytes": dest.stat().st_size}
 
 
 @router.get("/jobs", response_model=list[JobOut])

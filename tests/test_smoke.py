@@ -87,7 +87,11 @@ def test_endpoints_smoke(temp_world):
     assert client.get("/api/health").json()["ok"] is True
     assert "specs" in client.get("/api/params/schema").json()
     assert client.get("/api/runtime").json()["detected"] in ("winml", "dml", "cpu")
-    created = client.post("/api/jobs", json={"kind": "separate", "params": {"tier": "vocals"}})
+    _, wav = temp_world
+    created = client.post(
+        "/api/jobs",
+        json={"kind": "separate", "params": {"tier": "vocals"}, "source": str(wav)},
+    )
     assert created.status_code == 200
     job_id = created.json()["id"]
     assert client.get(f"/api/jobs/{job_id}").json()["kind"] == "separate"

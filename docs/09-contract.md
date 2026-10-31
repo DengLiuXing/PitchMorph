@@ -44,7 +44,8 @@
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| POST | `/api/jobs` | 创建（`kind` + `parent`/`target` + `params`） |
+| POST | `/api/uploads` | 上传音频（multipart），返回 `source` 供创建任务使用 |
+| POST | `/api/jobs` | 创建（`kind` + `parent`/`target` + `source` + `params`） |
 | GET | `/api/jobs/{id}` | 状态 + artifacts + warnings |
 | GET | `/api/jobs/{id}/events` | SSE：进度、日志、状态变更（替代 V2 的 stdout JSON 协议） |
 | POST | `/api/jobs/{id}/cancel` | 取消；已产出的 artifact 保留 |
