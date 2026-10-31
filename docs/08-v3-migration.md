@@ -14,7 +14,7 @@ V2 只提供两样东西——**不可再生的资产**与**用教训换来的�
 |---|---|---|---|
 | `doc_old/06-v3.md` §5.7.1 | 「Windows ML 文档也把 DirectML 标为 legacy」 | **未获证实**。WinML overview（2026-09-08）写的是 DirectML 在「所有受支持的 Windows 版本」可用；ORT 官方 EP 页的措辞是 **sustained engineering**（"continues to be supported"），不是 deprecated、也不是官方称的 legacy | `learn.microsoft.com/en-us/windows/ai/new-windows-ml/overview`、`onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html` |
 | `doc_old/06-v3.md` §5.6 ④ / §5.8 | 「WinML 只在 WinRT/.NET/C++ 可用，Python 用不了」→ 因此「倾向 B（.NET）」 | **前提错误，该倾向作废**。微软已发官方 Python 包：`onnxruntime-windowsml` **1.30.0**（2026-09-17；另有 1.28.3 / 2026-10-26；cp311–cp314、win_amd64/arm64）与 `windowsml` **2.5.96**（Alpha）；模块名仍是 `onnxruntime` | PyPI 上述两包 |
-| `doc_old/06-v3.md` §5.5 第 3 条 | 「首次下载合计约 400 MB」 | 过期。按现制品：仅人声档 ≈ 379 MB、四轨档 ≈ 873 MB | `docs/weights.md` §5 第 6 条 |
+| `doc_old/06-v3.md` §5.5 第 3 条 | 「首次下载合计约 400 MB」 | 过期。按现制品：仅人声档 ≈ 338 MB、四轨档 ≈ 831 MB（FCPE 已入库，不计入首下） | `docs/weights.md` §5 第 6 条 |
 | `doc_old/06-v3.md` §5.7 | 「V3 只做两档，不做四轨」 | 改为「仅人声 + 四轨」；六轨暂缓，理由见 `weights` §3.4 | 本文件 §1.2 |
 | `doc_old/06-v3.md` §5.1 / §5.6② | 「demucs 的分块循环要自己搬过来/自己驱动 Session」 | 实现改为复用 `demucs-onnx==0.3.4` + `pip install --no-deps`；「必须自写」的唯一理由（pip 硬依赖 CPU 版 ORT）已有标准解法 | `docs/weights.md` §3.3 |
 | `doc_old/06-v3.md` §5.8 | 技术栈 A（Python）/ B（.NET）/ C（Rust）三选一，「倾向 B」 | 已定 **A（Python）**：B 的前提不成立（见上行），C 的调试成本与收益不匹配。该表整体作废，不再是待决项 | 本文件 §1.2「技术栈」行 |
@@ -30,22 +30,22 @@ V2 只提供两样东西——**不可再生的资产**与**用教训换来的�
 
 | 路径 | 体积 | 不可替代的原因 |
 |---|---|---|
-| `models/fcpe_net.onnx` | 41.3 MB（43 336 392 B） | FCPE 唯一可用形态：已验证与 PyTorch 数值等价（CPU RPA 100%，中位误差 0.0006 音分）；上游没有官方 ONNX，属于「自建产物」 |
-| `models/fcpe_net_opset19.onnx` | 41.3 MB（43 338 986 B） | 同一张图的 opset 19 版（`07-spike.md` §3 记「两个 opset 结果一致」）；只在 17 版报错时兜底 |
-| `models/fcpe_latent.onnx` | 41.3 MB（43 331 024 B） | 只导主干（`mel → latent`）的定位图，是 `07-spike.md` §3.1「偏差来自主干、不是解码」的唯一物证，复验 DML 结论必须用它 |
-| `samples/vocadito` | 72.4 MB（75 934 380 B，409 个文件） | 40 首**人工标注**（音符 + 帧级 F0 + 双标注者）——全项目唯一的客观基准，也是「人类天花板」的唯一来源 |
-| `samples/openutau_official` | 34.4 MB（36 111 990 B，6 个文件） | 两首官方转写（含 188 s 长音频），用于长音频与 USTX 对照 |
-| `models/*.npz` | 2.4 MB（2 527 014 B，3 个） | 数值回归参考值（mel / latent / ref_f0），换机器/换运行时用来复验 |
+| `models/fcpe_net.onnx` | 41.3 MB（43 336 392 B） | FCPE 唯一可用形态：已验证与 PyTorch 数值等价（CPU RPA 100%，中位误差 0.0006 音分）；上游没有官方 ONNX，属于「自建产物」——**随仓库入库** |
+| `models/fcpe_net.npz` | 772 KB（772 024 B） | 这张图的数值回归参考值，换机器/换运行时用来复验 |
+| `temp-dev/models/fcpe_net_opset19.onnx` | 41.3 MB | 同一张图的 opset 19 版（`07-spike.md` §3 记「两个 opset 结果一致」）；只在 17 版报错时兜底，**不入库** |
+| `temp-dev/models/fcpe_latent.onnx` | 41.3 MB | 只导主干（`mel → latent`）的定位图，复验「DML 偏差来自主干」时用它，**不入库** |
+| `temp-dev/samples/vocadito` | 72.4 MB（75 934 380 B，409 个文件） | 40 首**人工标注**（音符 + 帧级 F0 + 双标注者）——全项目唯一的客观基准，也是「人类天花板」的唯一来源；**开发测试用，不入库** |
+| `temp-dev/samples/openutau_official` | 34.4 MB（36 111 990 B，6 个文件） | 两首官方转写（含 188 s 长音频），用于长音频与 USTX 对照；**开发测试用，不入库** |
+| `temp-dev/OpenUtau-master` | 60.1 MB（969 个文件） | OpenUtau 源码，写音符边界与 USTX 导出时**只读参考**；不复制、不 import、不打包 |
 
-> 上表是 **V3 仓库内的实际路径**（2026-10-31 核对：`temp-dev/` 已不存在，`models/` 与 `samples/` 已在 `.gitignore` 中）。
-> 体积为实测字节数；SHA256 待补（补法见 `weights.md` §5 第 1 条）。
+> 上表是 **V3 仓库内的实际路径**（2026-10-31 核对）。
+> 唯一的入库例外是 `models/fcpe_net.onnx` 与其 `.npz`：`.gitignore` 用 `models/*` + `!models/fcpe_net.*` 白名单放行，其余仍在 `temp-dev/` 下忽略。
 
 > **GAME 不再迁移**：官方有 ONNX release，按 `docs/weights.md` 在运行时下载（带 SHA256 校验）。
-> 原则是「官方能下载的不入库，只有官方没有 ONNX 的才自建」（目前只有 FCPE；demucs 的权重来自 HF `StemSplitio`，也不属于自建）。
-> 其余资产同样不入 git，V3 侧 `.gitignore` 已忽略 `models/` 与 `samples/`。
+> 原则是「官方能下载的不入库；官方没有 ONNX 的自建产物**入库**」（后者目前只有 FCPE；demucs 的权重来自 HF `StemSplitio`，不属于自建）。
 >
 > 两处此前含糊、现已明确：**demucs「待定」指的是权重分发档位**（首下 166 MB 单轨 / 660 MB bag，见 `weights` §3.1），不是要不要自建 ONNX；
-> **FCPE 的交付方式**是「随包分发」或「首启自托管下载 + SHA256」二选一（`weights` §2），`models/` 不进 git 这一点不变。
+> **FCPE 的交付方式已定**——直接随仓库分发，不走首启下载（`weights` §2）。
 > **GAME 权重许可上游未声明**（代码 MIT），第三方一致转述为 CC BY-NC-SA 4.0，发布前必须确认——见 `weights` §1.1。
 
 ### 1.2 设计结论：只保留判断，不保留实现
@@ -91,6 +91,7 @@ No-go 时的动作：主线用 `onnxruntime-directml 1.24.4` + CPU 兜底（已�
 - `frontend/**`、`app/static/**` —— 旧 Vue 前端，MD3 重写
 - `tests/**` —— V2 的行为规格，仅作「这些边界条件当年踩过」的提醒
 - `data/jobs/**` —— 旧任务与旧格式，不兼容
+- `temp-dev/OpenUtau-master/` —— **外部**参考（不是 V2 的），写音符边界语义与 USTX 导出时只读对照；同样不复制、不 import、不打包
 
 `temp-dev/spike/*.py` 与 `scripts/eval_*.py` 同样是参考：验证过一次就不再必须，V3 的评测工具重新写。
 
@@ -117,7 +118,7 @@ No-go 时的动作：主线用 `onnxruntime-directml 1.24.4` + CPU 兜底（已�
 |---|---|
 | D14 / D17 / D18 / D19 四条会被反复违反的约束 | `doc_old/01-decisions.md` |
 | GAME 的体积/速度/质量实测表（避免重试已排除的参数） | `doc_old/05-game.md` |
-| USTX / 导出格式细节 | `doc_old/04-ustx.md` |
+| USTX / 导出格式细节 | `doc_old/04-ustx.md`，以及 `temp-dev/OpenUtau-master`（源码对照，比文档可靠） |
 | V2 前端与性能审计 | `doc_old/02-frontend.md`、`doc_old/perf-audit.md` |
 | 其余（`00-replication`、`03-pytorch-dual`、`06-v3`） | `doc_old/` 同名文件 |
 

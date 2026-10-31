@@ -1,6 +1,6 @@
 # 07 · V3 spike 记录（2026-10-30）
 
-> 一次性验证，代码在 `temp-dev/spike/`（不入库；该目录属于 V2 侧临时目录，V3 仓库里已不存在）。目标：回答「ONNX + DirectML 这条路能不能走」。
+> 一次性验证，代码在 `temp-dev/spike/`（不入库）。该路径属于 V2 侧的临时目录；V3 仓库里的 `temp-dev/` 只放开发用资产（samples、OpenUtau 源码、调试模型，见 `08-v3-migration.md` §1.1）。目标：回答「ONNX + DirectML 这条路能不能走」。
 > 状态：**FCPE 已测完，结论不利；GAME / demucs 因权重未就位，未测。**
 
 ## 1. 环境

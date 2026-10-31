@@ -1,7 +1,8 @@
 # 权重来源与分发策略
 
 **原则：能从官方源获取的，一律运行时下载，不入库、不随仓库分发。**
-只有「官方根本不提供 ONNX」的模型才自建，并且自建产物要记录导出参数与等价性验证。
+**例外是「官方根本不提供 ONNX」的自建产物——它必须入库**，并记录导出参数与等价性验证（目前只有 FCPE，41.3 MB）。
+理由：网上拿不到，丢了就不可再生；首启下载反而给它加了一个新的失败点。
 
 ## 1. 官方源可直接下载（不入库）
 
@@ -39,7 +40,9 @@ GAME-1.0.3-medium-onnx/
 |---|---|---|---|
 | FCPE | 仅 PyTorch（`torchfcpe` 内置 `fcpe_c_v001.pt`），ONNX 推理类是空壳（`NotImplementedError`） | `models/fcpe_net.onnx` 41.3 MB | 与 PyTorch 数值等价：CPU RPA 100%、音高误差中位 0.0006 音分；mel 前处理放图外（上游 mel 里有数据相关分支，导不出） |
 
-> **交付方式已收敛**：`docs/08-v3-migration.md` §1.1 明确 `models/` 被 `.gitignore` 忽略，所以「入库」不是选项。自建产物只有两种交付——**随安装包分发**，或**首启从自托管地址下载 + SHA256 校验**；二选一，并在 §5 的清单里写死。
+> **交付方式已定（2026-10-31）**：FCPE **随仓库入库**，不走首启下载。`.gitignore` 用 `models/*` 加白名单 `!models/fcpe_net.onnx` / `!models/fcpe_net.npz` 放行；
+> 调试与兜底用的 `fcpe_latent.onnx`、`fcpe_net_opset19.onnx` 及其 npz 移到 `temp-dev/models/`，不占仓库体积。
+> 这改写了原原则里的「不入库」一刀切——对官方可下载的模型仍然成立，对自建产物不成立。
 
 > **复现脚本缺失（待补）**：FCPE 的导出脚本与 checkpoint 来源都没有固化——`temp-dev/spike/` 与 `tools/` 在 V3 仓库里都不存在。这是全项目唯一不可再生的产物，必须在写骨架前补 `tools/export_fcpe.py`（checkpoint 地址 + torch 版本 + 导出命令 + 期望的 SHA256）。补完之前，§5 第 1 条要求的自建产物 SHA256 也无从计算。
 
@@ -128,9 +131,9 @@ StemSplit 的 `demucs-onnx`（MIT，PyPI 0.3.4 / 2026-05-22，作者 StemSplit�
 2. 断点续传（大文件 171 MB，国内直连 GitHub 容易中断——本次调试就断过一次）
 3. 离线可用：本地已存在且哈希匹配则跳过
 4. 镜像可配置（`HF_ENDPOINT` 之类的环境变量），但**默认走官方源**
-5. 自建产物（目前只有 FCPE）要么随包分发，要么首启下载；**不要**在安装时用 PyTorch 现场导出——那需要额外 2.5 GB 依赖
-6. **首下体积预算**（按 §3.1 的制品算，GAME 按 zip 计）：
-   - 仅人声档：GAME 171.4 MB + demucs 单轨 fp16 166 MB + FCPE 41.3 MB ≈ **379 MB**
-   - 四轨档：GAME 171.4 MB + demucs bag fp16 660 MB + FCPE 41.3 MB ≈ **873 MB**
-   - FCPE 若改为随包分发则不计入首下；主旋律/和声分离模型未选型，不在此列（§4）
+5. 自建产物（目前只有 FCPE）**随仓库入库**，不从网络拉；**不要**在安装时用 PyTorch 现场导出——那需要额外 2.5 GB 依赖（复现入口是 `tools/export_fcpe.py`）
+6. **首下体积预算**（只算运行时下载的部分，GAME 按 zip 计；FCPE 随仓库、不计入）：
+   - 仅人声档：GAME 171.4 MB + demucs 单轨 fp16 166 MB ≈ **338 MB**
+   - 四轨档：GAME 171.4 MB + demucs bag fp16 660 MB ≈ **831 MB**
+   - 主旋律/和声分离模型未选型，不在此列（§4）
    - `doc_old/06-v3.md` §5.5 的「首次下载约 400 MB」已过期，以本节为准
