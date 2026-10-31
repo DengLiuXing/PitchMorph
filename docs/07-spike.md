@@ -1,6 +1,6 @@
 # 07 · V3 spike 记录（2026-10-30）
 
-> 一次性验证，代码在 `temp-dev/spike/`（不入库）。目标：回答「ONNX + DirectML 这条路能不能走」。
+> 一次性验证，代码在 `temp-dev/spike/`（不入库；该目录属于 V2 侧临时目录，V3 仓库里已不存在）。目标：回答「ONNX + DirectML 这条路能不能走」。
 > 状态：**FCPE 已测完，结论不利；GAME / demucs 因权重未就位，未测。**
 
 ## 1. 环境
@@ -8,7 +8,7 @@
 | 项 | 值 |
 |---|---|
 | 隔离环境 | `temp-dev/spike/.venv`，Python 3.12 |
-| ONNX Runtime | `onnxruntime-directml==1.24.4`（DML EP 的最新版，见 `docs/06-v3.md` 5.7.1） |
+| ONNX Runtime | `onnxruntime-directml==1.24.4`（DML EP 的最新版，见 `doc_old/06-v3.md` 5.7.1） |
 | 导出侧 | 主环境 torch 2.11.0+cu128（仅用于导出与参考值，不参与 V3 运行时） |
 | 机器 | RTX 5060 Laptop，驱动 610.62 |
 
@@ -18,7 +18,7 @@
 
 - 切点：只导网络（`mel → f0`），mel 前处理放在图外。
   原因：`torchfcpe.mel_extractor` 里 `pad_right < y.size(-1)` 是数据相关分支，
-  TorchScript 导出成 `onnx::If` 后直接失败；而 V3 的前处理本来就要用 C#/Rust 重写。
+  TorchScript 导出成 `onnx::If` 后直接失败；而 V3 的前处理本来就要在 Python 侧自实现（reflect pad → hann → rfft → mel 投影 → log）。
 - 产物：`fcpe_net.onnx` 41.3 MB（opset 17）/ 同名 opset 19 版本各一份。
 - 输入固定 `(1, 501, 128)`（5 s @16 kHz，hop 160 → 500 帧 + 1）。
 - mel 等价性：自实现（reflect pad → hann → rfft → mel 投影 → log）与 `wav2mel` 的
@@ -91,7 +91,7 @@ encoder 首轮更慢是因为包含 DML 图编译。热身后 12 s 音频总耗�
 
 | 项 | 原因 |
 |---|---|
-| demucs 4 轨 / 6 轨（fp16 权重版 157.9 / 130.1 MB） | 按约定跳过；下次只需验「conv+STFT」这一类图在 DML 上是否同样精确 |
+| demucs 4 轨 / 6 轨 | 按约定跳过；下次只需验「conv+STFT」这一类图在 DML 上是否同样精确。体积以 `docs/weights.md` §3.1 的实测表为准（单文件 4 轨 316 MB / fp16 166 MB；6s 258 MB） |
 
 ## 6. 结论：DML 可以用，但要按模型分开
 
@@ -106,13 +106,33 @@ encoder 首轮更慢是因为包含 DML 图编译。热身后 12 s 音频总耗�
 | GAME（音符） | DML 优先 → CPU 兜底 | 实测数值等价 |
 | FCPE（音高） | **CPU（或 CUDA 若可用）** | DML 上主干偏差不可接受；CPU 已足够快 |
 
-4. Windows ML 仍然值得押（系统管 EP、可自动拉 CUDA），但它要求 WinRT 生态；
-   而上面这张矩阵说明**即使只用 DML + CPU 也能交付**，WinML 从「必需」降级为「加分项」。
+4. Windows ML 仍然值得押（系统管 EP、可自动拉 CUDA），而且**Python 里就能用**：
+   微软已发官方包 `onnxruntime-windowsml`（1.30.0 / 2026-09-17，另有 1.28.3 / 2026-10-26；cp311–cp314、win_amd64/arm64）
+   与 `windowsml`（2.5.96 / 2026-10-26，Development Status = Alpha），模块名仍是 `onnxruntime`。
+   ~~原先「它要求 WinRT 生态、Python 里不能直接用」的说法有误，2026-10-31 更正。~~
+   但这不等于可用：三张图在 WinML 下的算子覆盖、数值与速度**都还没测**。
+   而上面这张矩阵说明**即使只用 DML + CPU 也能交付**，所以 WinML 仍是「加分项」而不是路线前提。
 5. FCPE 的偏差根因**不再追查**（D19）：CPU 只花 0.9 s/首，收益不抵成本。
 
 ## 7. 剩余未验（唯一一项）
 
 **demucs 的两张图在 DML 上是否同样精确**——这是矩阵里唯一还靠推测的格子
-（「同类卷积图，GAME 已验证」）。验证需要下载 fp16 权重版共约 288 MB：
-`htdemucs_fp16weights.onnx`（157.9 MB）与 `htdemucs_6s_fp16weights.onnx`（130.1 MB）。
-也可以等 V3 代码成型、接入时顺手验，不必现在下。
+（「同类卷积图，GAME 已验证」，而 FCPE 恰好证伪了这个类比）。
+验证要下载的制品与体积见 `docs/weights.md` §3.1：`StemSplitio/htdemucs-onnx`（单文件 4 轨，316 MB / fp16 166 MB）与 `StemSplitio/htdemucs-6s-onnx`（258 MB）。
+**建议前置**（2026-10-31）：这一步同时决定四轨档的首下体积与性能目标（`docs/08-v3-migration.md` §1.2「档位与权重」「性能目标」两行），
+成本是小时级，失败后果是目标要重定——所以放在写骨架之前，而不是「接入时顺手验」。
+
+## 8. WinML 路线（待测，2026-10-31 挂起）
+
+**状态：未开始，下一个待办。** 判据（四条 Go/No-go）见 `docs/08-v3-migration.md` §1.3；
+通过则运行时首选 WinML，不通过就维持本文 §6 的矩阵（DML 1.24.4 + CPU 兜底）。
+
+待填五项（测完直接补在这里，别另开文档）：
+
+| 项 | 记什么 |
+|---|---|
+| 安装形态 | `onnxruntime-windowsml` + 两个 `wasdk-*` 是否够；Windows App SDK Runtime 是否必须预装；Python 3.14 是否被接受 |
+| provider 列表 | 实际能探测到的 EP 名称（WinML 走 EP Catalog，不等于 `DmlExecutionProvider`） |
+| GAME 数值 | 对齐 §4 的判据：边界不一致帧、音高 p99 |
+| 耗时 | 12 s 音频端到端（首次图编译单独计） |
+| 结论 | Go（切首选）/ No-go（留记录，维持 DML） |

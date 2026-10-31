@@ -6,35 +6,80 @@ V2 只提供两样东西——**不可再生的资产**与**用教训换来的�
 
 ---
 
+## 0 · 勘误（2026-10-31）
+
+`doc_old/` 是 V2 文档的原样副本，只读、不改。其中被本轮核实推翻的结论集中列在这里，读到旧说法时以本节为准：
+
+| 归档位置 | 旧说法 | 现状 | 依据 |
+|---|---|---|---|
+| `doc_old/06-v3.md` §5.7.1 | 「Windows ML 文档也把 DirectML 标为 legacy」 | **未获证实**。WinML overview（2026-09-08）写的是 DirectML 在「所有受支持的 Windows 版本」可用；ORT 官方 EP 页的措辞是 **sustained engineering**（"continues to be supported"），不是 deprecated、也不是官方称的 legacy | `learn.microsoft.com/en-us/windows/ai/new-windows-ml/overview`、`onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html` |
+| `doc_old/06-v3.md` §5.6 ④ / §5.8 | 「WinML 只在 WinRT/.NET/C++ 可用，Python 用不了」→ 因此「倾向 B（.NET）」 | **前提错误，该倾向作废**。微软已发官方 Python 包：`onnxruntime-windowsml` **1.30.0**（2026-09-17；另有 1.28.3 / 2026-10-26；cp311–cp314、win_amd64/arm64）与 `windowsml` **2.5.96**（Alpha）；模块名仍是 `onnxruntime` | PyPI 上述两包 |
+| `doc_old/06-v3.md` §5.5 第 3 条 | 「首次下载合计约 400 MB」 | 过期。按现制品：仅人声档 ≈ 379 MB、四轨档 ≈ 873 MB | `docs/weights.md` §5 第 6 条 |
+| `doc_old/06-v3.md` §5.7 | 「V3 只做两档，不做四轨」 | 改为「仅人声 + 四轨」；六轨暂缓，理由见 `weights` §3.4 | 本文件 §1.2 |
+| `doc_old/06-v3.md` §5.1 / §5.6② | 「demucs 的分块循环要自己搬过来/自己驱动 Session」 | 实现改为复用 `demucs-onnx==0.3.4` + `pip install --no-deps`；「必须自写」的唯一理由（pip 硬依赖 CPU 版 ORT）已有标准解法 | `docs/weights.md` §3.3 |
+| `doc_old/06-v3.md` §5.8 | 技术栈 A（Python）/ B（.NET）/ C（Rust）三选一，「倾向 B」 | 已定 **A（Python）**：B 的前提不成立（见上行），C 的调试成本与收益不匹配。该表整体作废，不再是待决项 | 本文件 §1.2「技术栈」行 |
+| `doc_old/perf-audit.md` 第 211 行 | 「`onnxruntime-directml`……不建议」 | 已被实测修正：GAME 在 DML 上数值等价（边界 0/1201 帧、音高 p99 0.33 Hz）、segmenter 快 2.5×，只有 FCPE 不可用。DML 是**主选**（FCPE 例外） | `docs/07-spike.md` §3–§6 |
+
+技术栈据此定案：**Python（FastAPI + 本地 Web UI）**，DirectML 优先、FCPE 固定 CPU；WinML 降为**可选 EP**——可用，但**未实测**，不得当成结论。
+
+---
+
 ## 1. 迁移（只这两类）
 
 ### 1.1 资产：搬过去就不必重做
 
 | 路径 | 体积 | 不可替代的原因 |
 |---|---|---|
-| `temp-dev/spike/models/fcpe_net.onnx` | 41.3 MB | FCPE 唯一可用形态：已验证与 PyTorch 数值等价（CPU RPA 100%，中位误差 0.0006 音分）；上游没有官方 ONNX，属于「自建产物」 |
-| `temp-dev/samples/vocadito` | 72.4 MB | 40 首**人工标注**（音符 + 帧级 F0 + 双标注者）——全项目唯一的客观基准，也是「人类天花板」的唯一来源 |
-| `temp-dev/samples/openutau_official` | 34.4 MB | 两首官方转写（含 188 s 长音频），用于长音频与 USTX 对照 |
-| `temp-dev/spike/models/*.npz` | 2.3 MB | 数值回归参考值（mel / latent / ref_f0），换机器/换运行时用来复验 |
+| `models/fcpe_net.onnx` | 41.3 MB（43 336 392 B） | FCPE 唯一可用形态：已验证与 PyTorch 数值等价（CPU RPA 100%，中位误差 0.0006 音分）；上游没有官方 ONNX，属于「自建产物」 |
+| `models/fcpe_net_opset19.onnx` | 41.3 MB（43 338 986 B） | 同一张图的 opset 19 版（`07-spike.md` §3 记「两个 opset 结果一致」）；只在 17 版报错时兜底 |
+| `models/fcpe_latent.onnx` | 41.3 MB（43 331 024 B） | 只导主干（`mel → latent`）的定位图，是 `07-spike.md` §3.1「偏差来自主干、不是解码」的唯一物证，复验 DML 结论必须用它 |
+| `samples/vocadito` | 72.4 MB（75 934 380 B，409 个文件） | 40 首**人工标注**（音符 + 帧级 F0 + 双标注者）——全项目唯一的客观基准，也是「人类天花板」的唯一来源 |
+| `samples/openutau_official` | 34.4 MB（36 111 990 B，6 个文件） | 两首官方转写（含 188 s 长音频），用于长音频与 USTX 对照 |
+| `models/*.npz` | 2.4 MB（2 527 014 B，3 个） | 数值回归参考值（mel / latent / ref_f0），换机器/换运行时用来复验 |
+
+> 上表是 **V3 仓库内的实际路径**（2026-10-31 核对：`temp-dev/` 已不存在，`models/` 与 `samples/` 已在 `.gitignore` 中）。
+> 体积为实测字节数；SHA256 待补（补法见 `weights.md` §5 第 1 条）。
 
 > **GAME 不再迁移**：官方有 ONNX release，按 `docs/weights.md` 在运行时下载（带 SHA256 校验）。
-> 原则是「官方能下载的不入库，只有官方没有 ONNX 的才自建」（目前只有 FCPE，demucs 待定）。
+> 原则是「官方能下载的不入库，只有官方没有 ONNX 的才自建」（目前只有 FCPE；demucs 的权重来自 HF `StemSplitio`，也不属于自建）。
 > 其余资产同样不入 git，V3 侧 `.gitignore` 已忽略 `models/` 与 `samples/`。
+>
+> 两处此前含糊、现已明确：**demucs「待定」指的是权重分发档位**（首下 166 MB 单轨 / 660 MB bag，见 `weights` §3.1），不是要不要自建 ONNX；
+> **FCPE 的交付方式**是「随包分发」或「首启自托管下载 + SHA256」二选一（`weights` §2），`models/` 不进 git 这一点不变。
+> **GAME 权重许可上游未声明**（代码 MIT），第三方一致转述为 CC BY-NC-SA 4.0，发布前必须确认——见 `weights` §1.1。
 
 ### 1.2 设计结论：只保留判断，不保留实现
 
 | 结论 | 一句话 |
 |---|---|
-| 运行时矩阵 | GAME/demucs 走 DirectML（CPU 兜底），**FCPE 固定 CPU**（DML 主干失真，CPU 只花 0.9 s/首） |
-| 参数定稿 | 参数在创建任务时一次给全，调参=新建任务（D14）；产物必须能被自己的 `meta.json` 解释 |
+| 运行时矩阵 | GAME 走 **DirectML（已验）**、**FCPE 固定 CPU（已验）**（DML 主干失真，CPU 只花 0.9 s/首）、**demucs 走 DML 待验**（`07-spike.md` §7 唯一的未验格子，不得当结论；CPU 兜底）。注意区分：**DML 作为一条路径已经跑通**（两个 session 都建成、GAME 数值等价），剩下的是 demucs 的数值风险，不是可行性风险 |
+| 技术栈 | **Python（FastAPI + 本地 Web UI）**。运行时**先 spike WinML**，通过则为首选，否则退回 `onnxruntime-directml 1.24.4`（判据见 §1.3）；两者都藏在同一个 EP 适配层后面（`09-contract.md` §7），业务代码不出现 WinML 类型。撤销 `doc_old/06-v3.md` §5.8「倾向 .NET」 |
+| 参数定稿 | 参数在创建任务时一次给全，调参=新建任务（D14）；**派生（展开音轨算音高 / 手动提音符 / 单独导出）同样是新建子 job**，不是原地覆盖——落地方式见 `docs/09-contract.md` §1。产物必须能被自己的 `meta.json` 解释（artifact 字段见该文 §2） |
 | 导出 | **不做中值平滑**，曲线控制点 50 ms → 25 ms（D17）；平滑交给 OpenUtau |
 | 验收 | 以人工盲听为主；V2 的调参结论全部作废（D18），指标必须先证明与听感相关 |
-| 分离档位 | 只做「仅人声」与「四轨」。六轨暂不做：`demucs-onnx` 不提供 `htdemucs_6s`，且该模型的 guitar/piano 质量弱、无 FT 版（2026-10-31 定） |
-| 分轨实现 | 不引 `demucs-onnx` 包（它硬依赖 CPU 版 onnxruntime，与 DirectML 冲突），自实现「HF 拉权重 + 7.8 s/0.25 重叠分块」；等价性对上游 diff = 0 已验证 |
+| 分离档位 | 只做「仅人声」与「四轨」，六轨暂缓。旧理由「不提供 `htdemucs_6s`」不成立——`StemSplitio/htdemucs-6s-onnx`（258 MB）存在；保留暂缓的理由只剩：guitar/piano 质量明显弱于前四轨，且无 FT 版（2026-10-31 定） |
+| 分轨实现 | **复用 `demucs-onnx==0.3.4`（MIT）+ `pip install --no-deps`**，绕开它对 CPU 版 `onnxruntime>=1.17` 的硬依赖；包已提供 `separate_stem`、`providers="auto/dml"`、`SessionPool`/`prewarm`。仅当等价性（`max abs diff ≤ 1e-3`）不通过时才退回自实现（V1 的 7.8 s/0.25 分块对上游 diff = 0） |
+| 档位与权重 | 「仅人声」= FT 单轨图 `htdemucs-ft-vocals-onnx`（fp16 166 MB，1 session）；「四轨」= **FT bag `htdemucs-ft-onnx`（fp16 660 MB，4 个 session 顺序跑、逐批释放）**。两档是**不同模型**，同一个上传在人声轨上不承诺一致——产物必须记 `model` 字段（`09-contract.md`） |
+| 和声分离 | **在范围内，但属后续阶段**；V3 第一个可交付**不含**它。模型未选型（UVR/MVSEP 候选）、许可未知、增量耗时上限 `<30 s / 3 min`，三项都待办；先做可行性验证再纳入排期（`weights` §4） |
+| 性能目标 | 端到端：仅人声档 **≤ 60 s**、四轨档 **≤ 150 s**（3 min 歌，`07-spike.md` 实测数据的推算值）；峰值显存 **≤ 4 GB**（`doc_old/perf-audit.md` 实测四专家 3.3 GB 上加余量）。**旧目标「≤ 2 GB」作废**——它与实测冲突 |
 | 切片 | 必须按静音切片且**单片设长度上限**（GAME 注意力 O(T²)，整段会 OOM）；阈值别太窄，会把长音切断 |
 | 音符分析 | 只对单一声源可靠（UI 要提示）；模型音高优先于曲线中位数（人工标注上 82.8% vs 81.5%） |
 | 前端 | MD3 重写；音高挂音轨预览（展开才算、与播放同步）；音符手动触发、半透明条叠加、导出单独触发 |
 | 已知无效方向 | 谱通量起音融合、多种子集成、nsteps 16、large 体积、GAME 后处理参数微调——都试过且无收益 |
+
+### 1.3 WinML spike 的判据（Go / No-go）
+
+**目的不是“多一条加速路径”，是“不被锁在 1.24.4”。** 四条同时满足才切为首选，否则停在可选：
+
+| # | 判据 | 怎么验 |
+|---|---|---|
+| 1 | Python 侧能装起完整链路 | `onnxruntime-windowsml` + 两个 `wasdk-*` 包装完可 import；记录是否必须预装 Windows App SDK Runtime、Python 3.14 是否被接受（官方文档写 3.10–3.13，wheel 有 cp314） |
+| 2 | 能拿到 GPU EP | 打印实际 provider 列表；WinML 走 **EP Catalog**，与 `providers=['DmlExecutionProvider']` 不是一回事——拿不到 GPU 就失去意义 |
+| 3 | GAME 数值等价 | 对齐 `07-spike.md` §4 的判据：边界不一致帧 = 0、音高 p99 ≤ 0.33 Hz |
+| 4 | 端到端不劣化 | 12 s 音频耗时 ≤ 现 DML 路径（首次图编译单独计，那是可接受的） |
+
+No-go 时的动作：主线用 `onnxruntime-directml 1.24.4` + CPU 兜底（已验证可交付），WinML 只留文档记录。
+**降级是设计的一部分**：适配层只认「一次探测 + 按 `winml → dml → cpu` 下移」，不散落在业务代码里。
 
 ## 2. 不迁移（只读参考）
 
@@ -49,22 +94,52 @@ V2 只提供两样东西——**不可再生的资产**与**用教训换来的�
 
 `temp-dev/spike/*.py` 与 `scripts/eval_*.py` 同样是参考：验证过一次就不再必须，V3 的评测工具重新写。
 
+> 注意「不迁移」不等于「不需要」：V2 的 `orchestrator.py` + `protocol.py` 是当时唯一的进度/取消机制，V3 由 `docs/09-contract.md` §4 重新规定（`/events` + `/cancel`），粒度限制写在该文 §6。这是「删掉实现、保留约束、补上新契约」的典型一例。
+
 ## 3. 只保留文档的「结论层」
 
-V3 侧文档建议只留四页，其余归档在 V2：
+`docs/` 只放 V3 自用的三份，外加**一个例外**（2026-10-31 定）：
 
-| 保留 | 内容 |
+| 文件 | 内容 |
 |---|---|
-| `V3 构想.md` | 方向与已确认边界（你的原文） |
-| `docs/07-spike.md` | 运行时选型的实测数据（DML 对谁可用、对谁不可用） |
-| `docs/05-game.md` 的实测表 | GAME 的体积/速度/质量、ONNX 可行性——避免重试已排除的参数 |
-| `docs/01-decisions.md` 的 D14/D17/D18/D19 | 四条会反复被违反的约束 |
+| `docs/07-spike.md` | 运行时实测数据（DML 对谁可用、对谁不可用） |
+| `docs/08-v3-migration.md` | 本文——迁移原则与设计结论 |
+| `docs/weights.md` | 权重来源、体积、SHA256、许可、分发 |
+| `docs/09-contract.md`（**例外**） | 最小接口契约：job 状态机、artifact 字段、端点、失败态。「不保留实现」这条不适用于它——接口是多方约定的边界，不是实现细节 |
 
-其余（`00-replication`、`01-decisions`、`02-frontend`、`03-pytorch-dual`、`04-ustx`、`05-game`、`06-v3`、`perf-audit`）
-整份归档在本仓库的 **`doc_old/`**（V2 文档原样副本，只读），需要追溯时直接查，不必切仓库。
-`docs/` 只保留 V3 自用的三份：`07-spike.md`（运行时实测）、`08-v3-migration.md`（本文）、`weights.md`（权重来源）。
+例外只有这一条：**当且仅当不写就无法开工时，才允许新增一页契约**，且必须同样满足「结论 + 依据」。除契约外不新增其他文档。
+
+方向与已确认边界在仓库根的 `V3 构想.md`（不算附录文档，单独计数）。
+
+需要追溯的结论不在 `docs/` 里留副本，而是按「结论 → 归档位置」查 `doc_old/`（V2 文档原样副本，只读，不修改）：
+
+| 结论 | 归档位置 |
+|---|---|
+| D14 / D17 / D18 / D19 四条会被反复违反的约束 | `doc_old/01-decisions.md` |
+| GAME 的体积/速度/质量实测表（避免重试已排除的参数） | `doc_old/05-game.md` |
+| USTX / 导出格式细节 | `doc_old/04-ustx.md` |
+| V2 前端与性能审计 | `doc_old/02-frontend.md`、`doc_old/perf-audit.md` |
+| 其余（`00-replication`、`03-pytorch-dual`、`06-v3`） | `doc_old/` 同名文件 |
+
+规则：`docs/` 里的断言一律写「结论 + 依据」，依据可以是 `doc_old/xx.md` 的行号，也可以是一个 URL；不复制原文。
 
 ## 4. 迁移前的两件事
 
-- **许可**：vocadito 是 CC BY（需署名）；OpenUtau 官方转写来源待你确认；UVR 提纯模型未选型、许可未知
-- **仓库**：`PitchMorph-V3` 目前是空目录、非 git 仓库。建仓顺序建议：`.gitignore` → 资产 → 文档 → 骨架代码
+- **许可（2026-10-31 核实）**：
+  - GAME——代码 MIT（`LICENSE`，Team OpenVPI 2026）；**权重上游未声明**，三个第三方镜像一致转述 CC BY-NC-SA 4.0 → 按非商用处理，**发布阻断项**（`weights` §1.1）
+  - demucs / StemSplitio 的 ONNX 权重——MIT（已核 HF 模型卡）
+  - vocadito——CC BY 4.0（需署名）
+  - OpenUtau 官方转写——来源待你确认
+  - UVR 提纯模型——未选型，许可未知
+- **仓库**：已是 git 仓库（HEAD `ad2a3ba`「清空 V2 代码与文档，改为 V3 结构」），`.gitignore` 已就位。原先「空目录、非 git 仓库」的说法过期；剩下要做的是补资产与骨架代码
+
+## 5. 下一步（按顺序，2026-10-31 定）
+
+> 开工第一件事不是写骨架，是把三件「只能靠实测知道」的事情测掉。每项都在小时级，产出追加到对应文档。
+
+1. **WinML spike（当前待办）**——判据见 §1.3，四条全过才切首选，否则回落 `onnxruntime-directml 1.24.4`。
+   代码放仓库外（不入库），结论追加为 `07-spike.md` §8「WinML 路线实测」。
+2. **demucs 在 DML 上的数值**（`07-spike.md` §7 唯一空格子）——与官方 PyTorch 输出逐采样比 `max abs diff ≤ 1e-3`；
+   顺带把四轨档端到端时间与峰值显存记下来，作为 §1.2 性能目标的实测背书。
+3. **补 FCPE 导出脚本**——`tools/export_fcpe.py`（checkpoint 地址 + torch 版本 + 命令 + 期望 SHA256）；这是唯一不可再生的产物（`weights` §2）。
+4. **GAME 权重许可**——向上游确认，NC 与否决定 README 措辞与发布渠道（`weights` §1.1，阻断项）。
