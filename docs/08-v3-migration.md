@@ -52,7 +52,7 @@ V2 只提供两样东西——**不可再生的资产**与**用教训换来的�
 
 | 结论 | 一句话 |
 |---|---|
-| 运行时矩阵 | GAME 走 **DirectML（已验）**、**FCPE 固定 CPU（已验）**（DML 主干失真，CPU 只花 0.9 s/首）、**demucs 走 DML 待验**（`07-spike.md` §7 唯一的未验格子，不得当结论；CPU 兜底）。注意区分：**DML 作为一条路径已经跑通**（两个 session 都建成、GAME 数值等价），剩下的是 demucs 的数值风险，不是可行性风险 |
+| 运行时矩阵 | GAME 走 **DirectML（已验）**、**FCPE 固定 CPU（已验）**（DML 主干失真，CPU 只花 0.9 s/首）、**demucs 固定 CPU（已验：DML 首跑即 `E_OUTOFMEMORY`，图融合阶段挂，见 `07-spike.md` §7）**。DML 的实际使用面就是 GAME 一张 |
 | 技术栈 | **Python（FastAPI + 本地 Web UI）**。运行时**已定 WinML**：`onnxruntime-windowsml` 1.30.0 单包 + numpy，无需 Windows App SDK Runtime，`DmlExecutionProvider` 直连可用（实测见 `07-spike.md` §8）；适配层仍按 `winml → dml → cpu` 探测（`09-contract.md` §7），业务代码不出现 WinML 类型。撤销 `doc_old/06-v3.md` §5.8「倾向 .NET」 |
 | 参数定稿 | 参数在创建任务时一次给全，调参=新建任务（D14）；**派生（展开音轨算音高 / 手动提音符 / 单独导出）同样是新建子 job**，不是原地覆盖——落地方式见 `docs/09-contract.md` §1。产物必须能被自己的 `meta.json` 解释（artifact 字段见该文 §2） |
 | 导出 | **不做中值平滑**，曲线控制点 50 ms → 25 ms（D17）；平滑交给 OpenUtau |
@@ -61,7 +61,7 @@ V2 只提供两样东西——**不可再生的资产**与**用教训换来的�
 | 分轨实现 | **复用 `demucs-onnx==0.3.4`（MIT）+ `pip install --no-deps`**，绕开它对 CPU 版 `onnxruntime>=1.17` 的硬依赖；包已提供 `separate_stem`、`providers="auto/dml"`、`SessionPool`/`prewarm`。仅当等价性（`max abs diff ≤ 1e-3`）不通过时才退回自实现（V1 的 7.8 s/0.25 分块对上游 diff = 0） |
 | 档位与权重 | 「仅人声」= FT 单轨图 `htdemucs-ft-vocals-onnx`（fp16 166 MB，1 session）；「四轨」= **FT bag `htdemucs-ft-onnx`（fp16 660 MB，4 个 session 顺序跑、逐批释放）**。两档是**不同模型**，同一个上传在人声轨上不承诺一致——产物必须记 `model` 字段（`09-contract.md`） |
 | 和声分离 | **在范围内，但属后续阶段**；V3 第一个可交付**不含**它。模型未选型（UVR/MVSEP 候选）、许可未知、增量耗时上限 `<30 s / 3 min`，三项都待办；先做可行性验证再纳入排期（`weights` §4） |
-| 性能目标 | 端到端：仅人声档 **≤ 60 s**、四轨档 **≤ 150 s**（3 min 歌，`07-spike.md` 实测数据的推算值）；峰值显存 **≤ 4 GB**（`doc_old/perf-audit.md` 实测四专家 3.3 GB 上加余量）。**旧目标「≤ 2 GB」作废**——它与实测冲突 |
+| 性能目标 | **原目标已被实测推翻，待重定**：demucs 只能跑 CPU，按 `07-spike.md` §7 的 RTF 外推 3 min 歌——仅人声 ≈**71 s**、四轨 ≈**286 s**。原「≤60 s / ≤150 s」作废（连同更早的 ≤2 GB）。两个选项待选：① 放宽到 ≤90 s / ≤300 s；② 四轨改用单文件 `htdemucs`（1 张图，约为 bag 的 1/4 耗时，SDR 略低）。峰值显存 ≤4 GB 仍成立——GPU 上只剩 GAME 一张图 |
 | 切片 | 必须按静音切片且**单片设长度上限**（GAME 注意力 O(T²)，整段会 OOM）；阈值别太窄，会把长音切断 |
 | 音符分析 | 只对单一声源可靠（UI 要提示）；模型音高优先于曲线中位数（人工标注上 82.8% vs 81.5%） |
 | 前端 | MD3 重写；音高挂音轨预览（展开才算、与播放同步）；音符手动触发、半透明条叠加、导出单独触发 |
@@ -144,7 +144,7 @@ No-go 时的动作：主线用 `onnxruntime-directml 1.24.4` + CPU 兜底（已�
 
 1. **WinML spike（当前待办）**——判据见 §1.3，四条全过才切首选，否则回落 `onnxruntime-directml 1.24.4`。
    代码放仓库外（不入库），结论追加为 `07-spike.md` §8「WinML 路线实测」。
-2. **demucs 在 DML 上的数值**（`07-spike.md` §7 唯一空格子）——与官方 PyTorch 输出逐采样比 `max abs diff ≤ 1e-3`；
-   顺带把四轨档端到端时间与峰值显存记下来，作为 §1.2 性能目标的实测背书。
+2. ~~**demucs 在 DML 上的数值**~~ —— **已验（2026-10-31）**：DML 首跑即 `E_OUTOFMEMORY`，demucs 固定 CPU；
+   CPU 实测 RTF 仅人声 0.394、四轨 1.590，原性能目标因此作废，见 `07-spike.md` §7 与 §1.2「性能目标」行。
 3. **补 FCPE 导出脚本**——`tools/export_fcpe.py`（checkpoint 地址 + torch 版本 + 命令 + 期望 SHA256）；这是唯一不可再生的产物（`weights` §2）。
 4. **GAME 权重许可**——向上游确认，NC 与否决定 README 措辞与发布渠道（`weights` §1.1，阻断项）。

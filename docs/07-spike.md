@@ -115,13 +115,28 @@ encoder 首轮更慢是因为包含 DML 图编译。热身后 12 s 音频总耗�
    所以上面这张矩阵一句不改——WinML 只是换了 ORT 核心与加载方式，EP 分工照旧。
 5. FCPE 的偏差根因**不再追查**（D19）：CPU 只花 0.9 s/首，收益不抵成本。
 
-## 7. 剩余未验（唯一一项）
+## 7. demucs 在 DML 上（2026-10-31 已验：不可用）
 
-**demucs 的两张图在 DML 上是否同样精确**——这是矩阵里唯一还靠推测的格子
-（「同类卷积图，GAME 已验证」，而 FCPE 恰好证伪了这个类比）。
-验证要下载的制品与体积见 `docs/weights.md` §3.1：`StemSplitio/htdemucs-onnx`（单文件 4 轨，316 MB / fp16 166 MB）与 `StemSplitio/htdemucs-6s-onnx`（258 MB）。
-**建议前置**（2026-10-31）：这一步同时决定四轨档的首下体积与性能目标（`docs/08-v3-migration.md` §1.2「档位与权重」「性能目标」两行），
-成本是小时级，失败后果是目标要重定——所以放在写骨架之前，而不是「接入时顺手验」。
+**结论：DML 在第一次前向就报错，demucs 只能走 CPU。** 不是数值偏差问题，是跑不起来。
+
+- 制品：`StemSplitio/htdemucs-ft-vocals-onnx` 的 `fp16weights` 版，**165 612 636 B**（≈158 MiB；`weights.md` 写的 166 MB 是十进制）
+- session 能建成（输入 `mix (1,2,343980)`，输出 `stems (1,4,2,343980)`），但 `run` 时在 `DmlGraphFusionHelper.cpp` 抛
+  `Exception(2) tid(...) 8007000E`，即 **E_OUTOFMEMORY**：图融合阶段就分配不下
+- 宿主侧看到的是 `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc4`——这是 WinML 版 ORT 的错误串编码缺陷（与 §8.1 那条 `Init provider bridge failed` 同源），**别被它误导成编码问题**
+- 换 CPU 立即正常，输出无 NaN
+
+| 档位 | EP | 12 s 音频耗时 | RTF |
+|---|---|---|---|
+| 仅人声（FT 单轨图） | CPU | 冷 9.07 s / 热 **4.73 s** | 0.394 |
+| 四轨（FT bag，4 专家） | CPU | 冷 68.04 s / 热 **19.09 s** | 1.590 |
+| 仅人声 | DML | ❌ E_OUTOFMEMORY | — |
+
+**对性能目标的影响**（按 RTF 线性外推 3 min 歌）：
+
+- 仅人声：180 × 0.394 ≈ **71 s**（原目标 ≤60 s，超）
+- 四轨：180 × 1.590 ≈ **286 s**（原目标 ≤150 s，超近一倍）
+
+怎么处理见 `docs/08-v3-migration.md` §1.2「性能目标」行——这是需要拍板的一处，不是实现细节。
 
 ## 8. WinML 路线（2026-10-31 已测，结论 Go）
 
