@@ -148,3 +148,5 @@ No-go 时的动作：主线用 `onnxruntime-directml 1.24.4` + CPU 兜底（已�
    CPU 实测 RTF 仅人声 0.394、四轨 1.590，原性能目标因此作废，见 `07-spike.md` §7 与 §1.2「性能目标」行。
 3. **补 FCPE 导出脚本**——`tools/export_fcpe.py`（checkpoint 地址 + torch 版本 + 命令 + 期望 SHA256）；这是唯一不可再生的产物（`weights` §2）。
 4. **GAME 权重许可**——向上游确认，NC 与否决定 README 措辞与发布渠道（`weights` §1.1，阻断项）。
+5. **mel 前处理对齐**——numpy 版与 `torchfcpe.wav2mel` 目前差 8 音分（系统性偏高，`07-spike.md` §9）。
+   在写 `stages/pitch.py` 之前解决，验收线：与 torch 全链路中位差 ≤1 音分。
