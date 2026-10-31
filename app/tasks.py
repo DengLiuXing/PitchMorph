@@ -223,7 +223,8 @@ class JobManager:
         event = self._cancelled.get(job_id)
         # 任务被删掉就当取消：让跑在里面的流水线尽快退出来
         if event is None:
-            return lambda: True
+            # 重启后取消表（内存）里没有旧任务：任务还在就当没取消，别让子任务瞬间被砍
+            return lambda: job_id not in self._meta
         return event.is_set
 
     def _run_separate(self, job_id: str) -> None:
@@ -313,8 +314,16 @@ class JobManager:
                 progress=lambda message: self._progress(job_id, "pitching", f"{stem}：{message}", 0.0),
                 should_cancel=self._should_cancel(job_id),
             )
-        except JobCancelled:
-            raise
+        except JobCancelled:  # 子任务取消不影响分好的轨：写回终态，别留下永远的 queued
+            with self._lock:
+                m = self._meta.get(job_id)
+                if m is not None:
+                    m.setdefault("pitch", {})[stem] = {"state": "failed", "fraction": 0.0, "failure": "已取消"}
+                    m["state"] = "ready"
+                    m["message"] = f"{stem} 音高提取已取消"
+                    self._save(job_id)
+            logger.info("音高提取已取消 id=%s stem=%s", job_id, stem)
+            return
         except Exception as exc:  # 音高失败不能把已经分好的轨判成整任务失败
             with self._lock:
                 m = self._meta.get(job_id)
@@ -368,8 +377,20 @@ class JobManager:
                 on_progress=on_progress,
                 should_cancel=self._should_cancel(job_id),
             )
-        except JobCancelled:
-            raise
+        except JobCancelled:  # 子任务取消不影响已经分好的轨
+            with self._lock:
+                current = self._meta.get(job_id)
+                if current is not None:
+                    current.setdefault("refine", {})[stem] = {
+                        "state": "failed",
+                        "fraction": 0.0,
+                        "failure": "已取消",
+                    }
+                    current["state"] = "ready"
+                    current["message"] = f"{stem} 提纯已取消"
+                    self._save(job_id)
+            logger.info("提纯已取消 id=%s stem=%s", job_id, stem)
+            return
         except Exception as exc:  # 提纯失败不影响已经分好的轨
             with self._lock:
                 current = self._meta.get(job_id)
@@ -415,7 +436,7 @@ class JobManager:
         logger.info("提纯完成 id=%s stem=%s", job_id, stem)
 
     def _run_notes(self, job_id: str, stem: str, params: dict) -> None:
-        """GAME 音符提取：写 notes_{stem}.json（边界来自 GAME，音高来自 FCPE 段内中位数）。"""
+        """GAME 音符提取：写 notes_{stem}.json（边界与音高都来自 GAME，OpenUtau 同口径）。"""
         from . import game, notes as notes_module
 
         meta = self._meta[job_id]
@@ -457,8 +478,21 @@ class JobManager:
                 should_cancel=self._should_cancel(job_id),
                 on_progress=on_progress,
             )
-        except JobCancelled:
-            raise
+        except JobCancelled:  # 子任务取消不影响分轨结果；状态写回终态，别留下永远的 queued
+            with self._lock:
+                current = self._meta.get(job_id)
+                if current is not None:
+                    current.setdefault("notes", {})[stem] = {
+                        "state": "failed",
+                        "fraction": 0.0,
+                        "failure": "已取消",
+                        "params": params,
+                    }
+                    current["state"] = "ready"
+                    current["message"] = f"{stem} 音符提取已取消"
+                    self._save(job_id)
+            logger.info("音符提取已取消 id=%s stem=%s", job_id, stem)
+            return
         except Exception as exc:  # 音符提取失败不影响分轨结果
             with self._lock:
                 current = self._meta.get(job_id)

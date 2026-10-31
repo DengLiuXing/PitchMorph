@@ -1,5 +1,3 @@
-import math
-
 from app import notes
 
 
@@ -22,40 +20,25 @@ def test_to_cents_uses_log_scale():
     assert abs(cents[1] - 1200.0) < 1e-9
 
 
-def test_midi_from_cents_rounds_to_semitone():
-    midi, offset = notes.midi_from_cents(0.0)
-    assert midi == 69
-    assert offset == 0.0
-    midi, offset = notes.midi_from_cents(-1000.0)
-    assert midi == 59
-    assert offset == 0.0
-
-
-def test_spans_from_segments_clips_out_of_range():
-    spans = notes.spans_from_segments(
-        [{"start_sec": 0.0, "dur_sec": 0.1}, {"start_sec": 100.0, "dur_sec": 1.0}],
-        0.01,
-        100,
-    )
-    assert spans[0] == (0, 9)
-    assert len(spans) == 1  # 越界的段被裁掉
-
-
-def test_build_notes_uses_median_inside_segment():
-    # 段内 261.6 Hz（C4）附近取中位数 -> MIDI 60
-    segments = [{"start_sec": 0.0, "dur_sec": 0.1}]
-    curve = dict(CURVE, f0=[261.63] * 10, voiced=[True] * 10)
-    result = notes.build_notes(segments, curve)
+def test_build_notes_rounds_model_midi():
+    segments = [{"start_sec": 0.0, "dur_sec": 0.1, "midi": 60.4, "voiced": True}]
+    result = notes.build_notes(segments)
     assert len(result) == 1
     assert result[0]["midi"] == 60
-    assert abs(result[0]["cents_offset"]) < 1.0
+    assert abs(result[0]["cents_offset"] - 40.0) < 1e-6
     assert result[0]["start_sec"] == 0.0
     assert abs(result[0]["dur_sec"] - 0.1) < 1e-6
 
 
-def test_build_notes_drops_silent_segments():
-    segments = [{"start_sec": 0.1, "dur_sec": 0.05}]
-    assert notes.build_notes(segments, CURVE) == []
+def test_build_notes_rounds_halfway_to_even():
+    # 与 OpenUtau 的 C# Math.Round 一致：.5 中点取偶数
+    assert notes.build_notes([{"start_sec": 0.0, "dur_sec": 0.1, "midi": 60.5, "voiced": True}])[0]["midi"] == 60
+    assert notes.build_notes([{"start_sec": 0.0, "dur_sec": 0.1, "midi": 61.5, "voiced": True}])[0]["midi"] == 62
+
+
+def test_build_notes_drops_unvoiced_segments():
+    segments = [{"start_sec": 0.1, "dur_sec": 0.05, "midi": 60.0, "voiced": False}]
+    assert notes.build_notes(segments) == []
 
 
 def test_build_payload_keeps_model_segments():

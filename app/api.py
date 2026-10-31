@@ -248,8 +248,8 @@ class NotesParams(BaseModel):
 
     tempo: float = Field(default=120.0, gt=0, le=400)
     sampling_steps: int = Field(default=8, ge=1, le=16)
-    boundary_threshold: float = Field(default=0.2, gt=0, le=1)
-    boundary_radius: int = Field(default=2, ge=1, le=20)
+    boundary_threshold: float = Field(default=0.1, gt=0, le=1)
+    boundary_radius: int = Field(default=1, ge=1, le=20)
     score_threshold: float = Field(default=0.2, gt=0, le=1)
     batch_size: int = Field(default=1, ge=1, le=16)
     max_batch_duration: float = Field(default=60.0, ge=0, le=600)

@@ -8,8 +8,12 @@ USTX 的字段与单位全部对照 OpenUtau 源码核实过（V2 已在真机 O
 - `voice_parts[].track_no` 必须指向存在的 track，否则 `AfterLoad` 直接越界、工程打不开；
 - 每个音符都必须有 `pitch` 且 `data` 至少一个点，`lyric` 不能是 null；
 - 音高线写在 `part.curves` 的 **`pitd`** 曲线里（xs 是 tick，ys 是相对该音符 tone 的
-  音分，间隔 5 tick = `UCurve.interval`），**不能同时写音符 pitch 折线**：
-  渲染时 PITD 会叠加在音符 pitch 之上，同时写等于把曲线加两遍，所以音符 pitch 固定成 y=0；
+  音分，间隔 5 tick = `UCurve.interval`），渲染时 PITD 叠加在音符 pitch 之上，
+  所以音符 pitch.data 只放 OpenUtau 新音符的默认锚点（±40ms 平直段 + snap_first，
+  让 OpenUtau 自己在音符连接处渲染短促的滑音连接线）；
+- pitd 的写法对照 `Rmvpe.ApplyToPart`（OpenUtau 转录后写音高线的同一套管线）：
+  音符首尾各修剪 min(25ms, 15% 时长)（这段留给滑音连接线）、5 tick 网格、
+  ≤60 tick 的短隙线性填充、中值滤波 + 自适应尖峰抑制；
 - `tempos[0].position` 与 `time_signatures[0].bar_position` 必须为 0。
 
 MIDI 用 mido 实现（不引入 pretty_midi）：每个音符一条长音符 + pitch bend 还原颤音与滑音，
@@ -26,10 +30,15 @@ RESOLUTION = 480
 CURVE_INTERVAL = 5
 PITD_MIN = -1200
 PITD_MAX = 1200
-# 超过这个偏移（音分）的帧不采信：切分已按半音切过，剩下的都是音高曲线的错帧
-PITD_MAX_DEVIATION = 250
-# 曲线降密：10 ms 全量会让 3 分钟的工程膨胀到几百 KB，50 ms 是折中
-DENSITY_SEC = 0.05
+# Rmvpe.ApplyToPart 的同款参数
+PITD_EDGE_TRIM_MS = 25.0
+PITD_EDGE_TRIM_RATIO = 0.15
+PITD_GAP_FILL_STEPS = 12  # 每步 5 tick，12 步 = 60 tick
+PITD_MEDIAN_RADIUS = 2
+PITD_SPIKE_THRESHOLD_CENTS = 75.0
+PITD_SPIKE_BLEND = 0.7
+# OpenUtau 新音符的默认 pitch 锚点：±40ms
+PITCH_ANCHOR_MS = 40.0
 
 # MIDI：弯音范围 ±200 音分，必须显式写 RPN，否则播放器按默认 ±2 半音解释
 BEND_RANGE_CENTS = 200.0
@@ -46,10 +55,11 @@ def _tick(seconds: float, bpm: float) -> int:
     return int(round(seconds * RESOLUTION * bpm / 60.0))
 
 
-def _flat_pitch(dur_sec: float) -> list[tuple[float, float]]:
+def _pitch_data() -> list[tuple[float, float]]:
     # 音符自己的 pitch 折线恒为 y=0：真实音高写在 part.curves 的 pitd 里，
-    # 两者同时写会在渲染时叠加两遍。
-    return [(0.0, 0.0), (round(dur_sec * 1000.0, 1), 0.0)]
+    # 两者同时写会在渲染时叠加两遍。±40ms 锚点 + snap_first 让 OpenUtau 在
+    # 音符连接处渲染 prev tone -> tone 的短促滑音连接线（新音符的默认形态）。
+    return [(-PITCH_ANCHOR_MS, 0.0), (PITCH_ANCHOR_MS, 0.0)]
 
 
 def _note_block(note: dict, position: int, duration: int) -> list[str]:
@@ -62,43 +72,116 @@ def _note_block(note: dict, position: int, duration: int) -> list[str]:
         "    pitch:",
         "      data:",
     ]
-    for x_ms, y in _flat_pitch(float(note["dur_sec"])):
+    for x_ms, y in _pitch_data():
         lines.append(f"      - {{x: {x_ms}, y: {y}, shape: io}}")
-    lines.append("    snap_first: false")
+    lines.append("    snap_first: true")
     lines.append(
         "    vibrato: {length: 0, period: 175, depth: 25, in: 10, out: 10, shift: 0, drift: 0, vol_link: 0}"
     )
     return lines
 
 
+def _median_filter(values: list[int]) -> list[int]:
+    result: list[int] = []
+    for i in range(len(values)):
+        window = sorted(values[max(0, i - PITD_MEDIAN_RADIUS): i + PITD_MEDIAN_RADIUS + 1])
+        result.append(window[len(window) // 2])
+    return result
+
+
+def _adaptive_smooth(values: list[int]) -> list[int]:
+    if len(values) <= 2:
+        return list(values)
+    result = list(values)
+    for i in range(1, len(values) - 1):
+        neighbor_average = (result[i - 1] + result[i + 1]) / 2.0
+        delta = result[i] - neighbor_average
+        if abs(delta) <= PITD_SPIKE_THRESHOLD_CENTS:
+            continue
+        result[i] = int(round(result[i] - delta * PITD_SPIKE_BLEND))
+    return result
+
+
+def _fill_short_gaps(points: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """≤60 tick 的空隙线性填充（OpenUtau 的 FillShortGaps）。"""
+    if not points:
+        return points
+    expanded = [points[0]]
+    for point in points[1:]:
+        prev = expanded[-1]
+        gap_steps = max(0, (point[0] - prev[0]) // CURVE_INTERVAL - 1)
+        if 0 < gap_steps <= PITD_GAP_FILL_STEPS:
+            for step in range(1, gap_steps + 1):
+                ratio = step / (gap_steps + 1)
+                expanded.append(
+                    (
+                        prev[0] + step * CURVE_INTERVAL,
+                        int(round(prev[1] + (point[1] - prev[1]) * ratio)),
+                    )
+                )
+        expanded.append(point)
+    return expanded
+
+
+def _simplify(points: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """去掉共线的中间点（OpenUtau 的 UCurve.Simplify）。"""
+    if len(points) < 3:
+        return points
+    result = [points[0]]
+    for i in range(1, len(points) - 1):
+        x0, y0 = result[-1]
+        x1, y1 = points[i]
+        x2, y2 = points[i + 1]
+        if (y1 - y0) * (x2 - x1) != (y2 - y1) * (x1 - x0):
+            result.append((x1, y1))
+    result.append(points[-1])
+    return result
+
+
 def _pitd_curve(cents, notes: list[dict], hop_sec: float, bpm: float) -> tuple[list[int], list[int]]:
     """真实音高 -> pitd 曲线（xs 是 tick，ys 是相对该音符 tone 的音分）。
 
-    逐音符取样：y 必须相对**该音符**的 tone 算，跨音符的插值没有意义。
+    对照 OpenUtau 的 `Rmvpe.ApplyToPart`（转录后写音高线的同一套管线）：
+    音符首尾修剪 min(25ms, 15% 时长) 留给滑音连接线，5 tick 网格，
+    组内短隙填充，中值滤波 + 自适应尖峰抑制，最后共线简化。
+    y 必须相对**该音符**的 tone 算，跨音符的插值没有意义。
     """
-    stride = max(1, int(round(DENSITY_SEC / hop_sec)))
-    xs: list[int] = []
-    ys: list[int] = []
+    groups: list[list[tuple[int, int]]] = []
     for note in notes:
-        first = int(round(note["start_sec"] / hop_sec))
-        last = int(round((note["start_sec"] + note["dur_sec"]) / hop_sec))
         midi = int(note["midi"])
-        for index in range(first, min(last, len(cents) - 1) + 1, stride):
+        start = float(note["start_sec"])
+        dur_ms = float(note["dur_sec"]) * 1000.0
+        edge_ms = min(PITD_EDGE_TRIM_MS, dur_ms * PITD_EDGE_TRIM_RATIO)
+        first = int(round(start / hop_sec))
+        last = int(round((start + float(note["dur_sec"])) / hop_sec))
+        group: list[tuple[int, int]] = []
+        for index in range(first, min(last, len(cents) - 1) + 1):
             value = cents[index]
             if value is None:
                 continue
-            x = _tick(index * hop_sec, bpm)
-            x = int(round(x / CURVE_INTERVAL)) * CURVE_INTERVAL
-            y = int(round((value - 100.0 * (midi - 69)) / 1.0))
-            if abs(y) > PITD_MAX_DEVIATION:
+            offset_ms = (index * hop_sec - start) * 1000.0
+            if dur_ms > edge_ms * 2 and (offset_ms < edge_ms or dur_ms - offset_ms <= edge_ms):
                 continue
+            x = int(round(_tick(index * hop_sec, bpm) / CURVE_INTERVAL)) * CURVE_INTERVAL
+            y = int(round(value - 100.0 * (midi - 69)))
             y = max(PITD_MIN, min(PITD_MAX, y))
-            if xs and x <= xs[-1]:
-                if x == xs[-1]:
-                    ys[-1] = y
-                continue
-            xs.append(x)
-            ys.append(y)
+            if group and group[-1][0] == x:
+                group[-1] = (x, y)
+            elif not group or x > group[-1][0]:
+                group.append((x, y))
+        if len(group) >= 2:
+            groups.append(group)
+
+    points: list[tuple[int, int]] = []
+    for group in groups:
+        points.extend(_fill_short_gaps(group))
+    if not points:
+        return [], []
+    ys = _adaptive_smooth(_median_filter([y for _, y in points]))
+    smoothed = [(x, y) for (x, _), y in zip(points, ys)]
+    smoothed = _simplify(smoothed)
+    xs = [x for x, _ in smoothed]
+    ys = [y for _, y in smoothed]
     return xs, ys
 
 

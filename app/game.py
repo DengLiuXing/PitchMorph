@@ -11,8 +11,8 @@
 4. segmenter 做 D3PM 采样循环（步数可调），每步 sigmoid 后按半径局部极大解码边界；
 5. bd2dur 出每个音符的时长与音符掩码，estimator 出 presence 与浮点音高。
 
-**借边界不借音高**：这里返回的 midi 是模型给的浮点值，最终以 FCPE 段内中位数为准
-（V2 实测 FCPE 中位数的一致率比模型 pitch 高 14 个点）。
+音高直接用 estimator 的浮点 midi 四舍五入（OpenUtau 同口径）；
+vocadito 人工标注实测模型 pitch 一致率 72.7%，FCPE 中位数只有 57.5%。
 """
 from __future__ import annotations
 
@@ -260,7 +260,7 @@ def extract_notes(
 ) -> list[dict]:
     """单声道波形 -> 音符列表 [{start_sec, dur_sec, midi, voiced}]。
 
-    借边界不借音高：midi 是模型给的浮点音高，最终导出用 FCPE 段内中位数覆盖。
+    midi 是模型 estimator 给的浮点音高，导出时四舍五入（OpenUtau 同口径）。
     """
     if sampling_steps < 1:
         raise ValueError("采样步数至少为 1")
@@ -271,7 +271,6 @@ def extract_notes(
     runtime.purge("heavy")
     location = registry.ensure_bundle(registry.GAME_BUNDLE_KEY)
     runner = GameRunner(location)
-    rng = np.random.default_rng()
     notes: list[dict] = []
     try:
         chunks = cap_slices(slice_audio(audio, **(slice_params or {})))
@@ -299,29 +298,26 @@ def extract_notes(
             )
             frames = x_seg.shape[1]
             known = np.zeros((count, frames), dtype=bool)
-            previous = known.copy()
+            boundaries = np.zeros((count, frames), dtype=bool)
             language_id = runner.language_id(language)
+            # 与 OpenUtau GameOnnxBackend 完全一致：D3PM 随机去噪与阈值/半径解码都在
+            # ONNX 图内部完成（图自带 RNG），输出就是 bool 边界；图外再做一遍会
+            # 重复去噪、重复局部极大抑制，边界会明显变少。
             for step in range(sampling_steps):
                 t_value = step / sampling_steps
-                probability = game_decode.d3pm_time_schedule(t_value)
-                previous = game_decode.remove_mutable_boundaries(previous, known, probability, rng)
-                logits = runner.segmenter.run(
+                boundaries = runner.segmenter.run(
                     None,
                     {
                         "x_seg": x_seg,
                         "language": np.full(count, language_id, dtype=np.int64),
                         "known_boundaries": known,
-                        "prev_boundaries": previous,
+                        "prev_boundaries": boundaries,
                         "t": np.full(count, t_value, dtype=np.float32),
                         "maskT": mask_t,
                         "threshold": np.array(boundary_threshold, dtype=np.float32),
                         "radius": np.array(boundary_radius, dtype=np.int64),
                     },
                 )[0]
-                soft = 1.0 / (1.0 + np.exp(-np.clip(logits, -60.0, 60.0)))
-                boundaries = game_decode.decode_soft_boundaries(
-                    soft, known, mask_t, boundary_threshold, boundary_radius
-                )
 
             durations, mask_n = durations_from_boundaries(boundaries, mask_t, runner.timestep)
             presence, scores = runner.estimator.run(
