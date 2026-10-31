@@ -53,7 +53,7 @@ V2 只提供两样东西——**不可再生的资产**与**用教训换来的�
 | 结论 | 一句话 |
 |---|---|
 | 运行时矩阵 | GAME 走 **DirectML（已验）**、**FCPE 固定 CPU（已验）**（DML 主干失真，CPU 只花 0.9 s/首）、**demucs 走 DML 待验**（`07-spike.md` §7 唯一的未验格子，不得当结论；CPU 兜底）。注意区分：**DML 作为一条路径已经跑通**（两个 session 都建成、GAME 数值等价），剩下的是 demucs 的数值风险，不是可行性风险 |
-| 技术栈 | **Python（FastAPI + 本地 Web UI）**。运行时**先 spike WinML**，通过则为首选，否则退回 `onnxruntime-directml 1.24.4`（判据见 §1.3）；两者都藏在同一个 EP 适配层后面（`09-contract.md` §7），业务代码不出现 WinML 类型。撤销 `doc_old/06-v3.md` §5.8「倾向 .NET」 |
+| 技术栈 | **Python（FastAPI + 本地 Web UI）**。运行时**已定 WinML**：`onnxruntime-windowsml` 1.30.0 单包 + numpy，无需 Windows App SDK Runtime，`DmlExecutionProvider` 直连可用（实测见 `07-spike.md` §8）；适配层仍按 `winml → dml → cpu` 探测（`09-contract.md` §7），业务代码不出现 WinML 类型。撤销 `doc_old/06-v3.md` §5.8「倾向 .NET」 |
 | 参数定稿 | 参数在创建任务时一次给全，调参=新建任务（D14）；**派生（展开音轨算音高 / 手动提音符 / 单独导出）同样是新建子 job**，不是原地覆盖——落地方式见 `docs/09-contract.md` §1。产物必须能被自己的 `meta.json` 解释（artifact 字段见该文 §2） |
 | 导出 | **不做中值平滑**，曲线控制点 50 ms → 25 ms（D17）；平滑交给 OpenUtau |
 | 验收 | 以人工盲听为主；V2 的调参结论全部作废（D18），指标必须先证明与听感相关 |
@@ -80,6 +80,10 @@ V2 只提供两样东西——**不可再生的资产**与**用教训换来的�
 
 No-go 时的动作：主线用 `onnxruntime-directml 1.24.4` + CPU 兜底（已验证可交付），WinML 只留文档记录。
 **降级是设计的一部分**：适配层只认「一次探测 + 按 `winml → dml → cpu` 下移」，不散落在业务代码里。
+
+> **结果（2026-10-31）：四条全过，Go。** 一个包 + numpy 即可（wasdk 不需要），DML EP 直连可用；
+> 数值与 1.24.4 **逐位一致**（FCPE DML 28.4%、GAME encoder max 8e-4 完全相同），session 加载还快一倍。
+> 详见 `07-spike.md` §8。推论：FCPE 仍然固定 CPU，此结论不因换包而改变。
 
 ## 2. 不迁移（只读参考）
 

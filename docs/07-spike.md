@@ -110,8 +110,9 @@ encoder 首轮更慢是因为包含 DML 图编译。热身后 12 s 音频总耗�
    微软已发官方包 `onnxruntime-windowsml`（1.30.0 / 2026-09-17，另有 1.28.3 / 2026-10-26；cp311–cp314、win_amd64/arm64）
    与 `windowsml`（2.5.96 / 2026-10-26，Development Status = Alpha），模块名仍是 `onnxruntime`。
    ~~原先「它要求 WinRT 生态、Python 里不能直接用」的说法有误，2026-10-31 更正。~~
-   但这不等于可用：三张图在 WinML 下的算子覆盖、数值与速度**都还没测**。
-   而上面这张矩阵说明**即使只用 DML + CPU 也能交付**，所以 WinML 仍是「加分项」而不是路线前提。
+   ~~但这不等于可用：三张图在 WinML 下的算子覆盖、数值与速度都还没测。~~
+   **2026-10-31 已测（见 §8）：四条判据全过，定为首选运行时**；数值与 1.24.4 逐位一致，
+   所以上面这张矩阵一句不改——WinML 只是换了 ORT 核心与加载方式，EP 分工照旧。
 5. FCPE 的偏差根因**不再追查**（D19）：CPU 只花 0.9 s/首，收益不抵成本。
 
 ## 7. 剩余未验（唯一一项）
@@ -122,17 +123,45 @@ encoder 首轮更慢是因为包含 DML 图编译。热身后 12 s 音频总耗�
 **建议前置**（2026-10-31）：这一步同时决定四轨档的首下体积与性能目标（`docs/08-v3-migration.md` §1.2「档位与权重」「性能目标」两行），
 成本是小时级，失败后果是目标要重定——所以放在写骨架之前，而不是「接入时顺手验」。
 
-## 8. WinML 路线（待测，2026-10-31 挂起）
+## 8. WinML 路线（2026-10-31 已测，结论 Go）
 
-**状态：未开始，下一个待办。** 判据（四条 Go/No-go）见 `docs/08-v3-migration.md` §1.3；
-通过则运行时首选 WinML，不通过就维持本文 §6 的矩阵（DML 1.24.4 + CPU 兜底）。
+**状态：已测完。** 判据见 `docs/08-v3-migration.md` §1.3。
 
-待填五项（测完直接补在这里，别另开文档）：
+### 8.1 安装与 EP
 
-| 项 | 记什么 |
+| 项 | 实测 |
 |---|---|
-| 安装形态 | `onnxruntime-windowsml` + 两个 `wasdk-*` 是否够；Windows App SDK Runtime 是否必须预装；Python 3.14 是否被接受 |
-| provider 列表 | 实际能探测到的 EP 名称（WinML 走 EP Catalog，不等于 `DmlExecutionProvider`） |
-| GAME 数值 | 对齐 §4 的判据：边界不一致帧、音高 p99 |
-| 耗时 | 12 s 音频端到端（首次图编译单独计） |
-| 结论 | Go（切首选）/ No-go（留记录，维持 DML） |
+| 环境 | 独立 venv，**Python 3.14.7**（官方文档写 3.10–3.13，cp314 wheel 实际存在且可用） |
+| 装了哪些 | 只有 `onnxruntime-windowsml==1.30.0.202609102321` + `numpy`；两个 `wasdk-*` **没装也不需要** |
+| Windows App SDK Runtime | **不需要**。不装 wasdk 也能创建 DML session |
+| provider | `['DmlExecutionProvider', 'CPUExecutionProvider']`，`get_device()` = `CPU-DML` |
+| 唯一告警 | `Init provider bridge failed.`——这是 WinML「EP 目录」桥未初始化（没装 wasdk），不影响直连 DML EP 的用法 |
+
+> 比预期好：原以为要背 Windows App SDK Runtime，实际只多一个包，且无外部运行时依赖。
+
+### 8.2 数值：与 1.24.4 逐位同源
+
+同一台机器、同一批资产，两个 venv 各跑一遍：
+
+| 测试 | `onnxruntime-directml 1.24.4` | `onnxruntime-windowsml 1.30.0` |
+|---|---|---|
+| FCPE DML（RPA / median / p99） | 28.4% / 89.058c / 2006.71c | **28.4% / 89.058c / 2006.71c** |
+| FCPE CPU（RPA / median） | 100% / 0.001c | 100% / 0.001c |
+| GAME encoder `x_seg` max\|diff\|（DML vs CPU） | 6.409e-04 | 6.410e-04（同量级，抖动） |
+| GAME encoder `x_est` max\|diff\| | 8.088e-04 | 8.086e-04 |
+| 12 s encoder（CPU / DML 热跑） | 0.129 s / 0.019 s | 0.137 s / 0.019 s |
+| session 加载（GAME encoder） | 0.73 s | **0.38 s** |
+
+**结论**：两个包里的 DirectML EP 是**同一份**（数值逐位一致），差异只在 ORT 核心版本（1.24.4 → 1.30.0）与加载速度。
+所以 §3、§6 的所有 DML 结论**原样迁移**，包括「FCPE 固定 CPU」——28.4% 说明失真没被修好，不必重验第二遍。
+
+### 8.3 判据结论
+
+| # | 判据 | 结果 |
+|---|---|---|
+| 1 | Python 侧装得起 | ✅ 一个包 + numpy，无需 wasdk |
+| 2 | 拿得到 GPU EP | ✅ `DmlExecutionProvider` 直连可用 |
+| 3 | GAME 数值等价 | ✅ encoder 层 max 8e-4、均值 6e-5（与 1.24.4 同源）；8 步 segmenter 全链路留到 `stages/notes.py` 落地时补测 |
+| 4 | 端到端不劣化 | ✅ 推理耗时相同，session 加载反而快一倍 |
+
+**Go**：运行时用 `onnxruntime-windowsml`，EP 矩阵沿用 §6（GAME → DML、FCPE → CPU、demucs 待验）。
