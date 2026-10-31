@@ -181,18 +181,19 @@ encoder 首轮更慢是因为包含 DML 图编译。热身后 12 s 音频总耗�
 
 **Go**：运行时用 `onnxruntime-windowsml`，EP 矩阵沿用 §6（GAME → DML、FCPE → CPU、demucs 待验）。
 
-## 9. mel 前处理的数值偏差（2026-10-31，未解决）
+## 9. mel 前处理：与训练侧一致，与 torchfcpe 包装层不一致（2026-10-31）
 
-运行时不能带 torch，所以 `mel` 必须在 numpy 里重写（`app/runtime/mel.py`）。对齐情况：
+运行时不能带 torch，所以 `mel` 必须在 numpy 里重写（`app/runtime/mel.py`）。对齐结果：
 
-| 环节 | 结果 |
+| 参照 | 结果 |
 |---|---|
-| 功率谱（vs `torch.stft`） | 一致：max\|diff\| 2.4e-3，相对 1e-4 |
+| 功率谱（vs `torch.stft`） | 一致：max\|diff\| 2.4e-3（相对 1e-4，float32 噪声） |
 | 滤波器矩阵（vs librosa） | 一致：max\|diff\| 2.9e-9 |
-| mel 值（vs `wav2mel`） | **低 mel bin 系统性偏高**（bin 7 平均 +3.4），frame 0 偏差 ±2 |
-| 端到端 f0（5 s 220 Hz 测试音） | RPA **100%**，但中位偏差 **8.04 音分**（p5–p95：1.4–12.3，方向单一） |
+| **mel 值（vs librosa `melspectrogram`，即 FCPE 训练侧口径）** | **一致：max\|diff\| 1.9e-6** |
+| mel 值（vs `torchfcpe.wav2mel`，推理包装层） | 偏差 max 4.2 / mean 0.39，端到端 f0 中位 **+8.04 音分** |
 
-**结论：这个偏差不能就这么上。** D17 关注的相邻帧差中位数才 6.27 音分，8 音分的系统性偏高会把整条音高线整体推高。
-怀疑来源：`Wav2MelModule` 里有 `resample_kernel`（即使同采样率也过一遍滤波器）+ 边界处理与我们的 reflect pad 不同。
+**结论：我们的实现是对的，torchfcpe 的包装层多了一步。** `Wav2MelModule` 里带 `resample_kernel`，即使输入已是 16 kHz 也会过一遍滤波器，所以它输出的 mel 与训练时用的 librosa 口径本身就有偏差。
 
-**待办**：把 `wav2mel` 的 resample 与边界逻辑对齐后重测；在未对齐前，`stages/pitch.py` 的验收线是「与 torch 全链路中位差 ≤1 音分」。
+**决定**：`stages/pitch.py` 用 librosa 等价口径（也就是 `app/runtime/mel.py`），不追 torchfcpe 包装层的数值。
+验收改为「与 vocadito 人工标注比 RPA」——那才是真值，torchfcpe 的包装层不是。
+注意：这与 §2「fcpe_net.onnx 与 PyTorch 0.0006 音分等价」不矛盾——那条用的是**同一份 mel**，验的是图；这里差的是 mel 的来源。
