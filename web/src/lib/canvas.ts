@@ -122,6 +122,7 @@ export function drawWave(
   pps: number,
   offset: number,
   color: string,
+  placeholder?: string,
 ): void {
   const palette = canvasPalette()
   const { width, height } = size
@@ -139,7 +140,7 @@ export function drawWave(
   if (!peaks || buckets === 0 || duration <= 0) {
     ctx.fillStyle = palette.labelDim
     ctx.font = palette.fontLarge
-    ctx.fillText('波形生成中', 12, middle + 4)
+    ctx.fillText(placeholder ?? '波形生成中', 12, middle + 4)
     shadeAfter(ctx, size, pps, offset, duration)
     return
   }
@@ -209,7 +210,7 @@ export interface PitchWindow {
 }
 
 /**
- * 音高曲线：固定时长（默认 10 s）的滑动窗口，横向**铺满整块画布**。
+ * 音高曲线：固定时长（默认 5 s）的滑动窗口，横向**铺满整块画布**。
  *
  * 与时间轴的缩放解耦——播放头不动，曲线从右往左滑过去，
  * 所以这里不用 pps，只认窗口的起止与画布宽度。
@@ -253,6 +254,39 @@ export function drawPitch(
     ctx.fillStyle = palette.labelDim
     ctx.fillText(`C${Math.floor(midi / 12) - 1}`, 3, y - 3)
   }
+
+  drawPitchCurve(ctx, size, curve, range, color, win)
+
+  // 中心光标 = 当前播放位置，窗口两端标相对秒
+  const cursorX = Math.round(xFor(Math.min(Math.max(win.cursor, win.from), win.to))) + 0.5
+  ctx.strokeStyle = palette.cursor
+  ctx.beginPath()
+  ctx.moveTo(cursorX, 0)
+  ctx.lineTo(cursorX, height)
+  ctx.stroke()
+
+  ctx.fillStyle = palette.labelDim
+  ctx.fillText(`${Math.round(win.from - win.cursor)}s`, 4, height - 4)
+  ctx.textAlign = 'right'
+  ctx.fillText(`+${Math.round(win.to - win.cursor)}s`, width - 4, height - 4)
+  ctx.textAlign = 'left'
+}
+
+/** 只画曲线本体（半透明色块 + 折线），网格与光标由调用方负责。 */
+function drawPitchCurve(
+  ctx: CanvasRenderingContext2D,
+  size: Size,
+  curve: PitchCurve,
+  range: MidiRange,
+  color: string,
+  win: PitchWindow,
+): void {
+  const palette = canvasPalette()
+  const { width, height } = size
+  const seconds = Math.max(0.001, win.to - win.from)
+  const xFor = (time: number) => ((time - win.from) / seconds) * width
+  const span = Math.max(1, range.high - range.low)
+  const yFor = (midi: number) => height - ((midi - range.low) / span) * height
 
   // 二分定位窗口起点：15 分钟是 9 万帧，逐帧扫太浪费
   let low = 0
@@ -324,18 +358,95 @@ export function drawPitch(
     }
   }
   ctx.stroke()
+}
 
-  // 中心光标 = 当前播放位置，窗口两端标相对秒
+/** 全屏钢琴卷帘的固定音域：C3 到 C6 */
+export const ROLL_RANGE: MidiRange = { low: 48, high: 84 }
+
+export interface RollNote {
+  start_sec: number
+  dur_sec: number
+  midi: number
+}
+
+/**
+ * 全屏钢琴卷帘：固定 C3-C6 音域，OpenUtau 风格的音符块 + 音高曲线 + 播放头。
+ * 网格每半音一条细线，C 音行加粗并标音名。
+ */
+export function drawPianoRoll(
+  ctx: CanvasRenderingContext2D,
+  size: Size,
+  curve: PitchCurve,
+  color: string,
+  win: PitchWindow,
+  notes: RollNote[],
+): void {
+  const palette = canvasPalette()
+  const range = ROLL_RANGE
+  const { width, height } = size
+  const seconds = Math.max(0.001, win.to - win.from)
+  const xFor = (time: number) => ((time - win.from) / seconds) * width
+  const span = Math.max(1, range.high - range.low)
+  const rowH = height / span
+  const yCenter = (midi: number) => height - ((midi - range.low + 0.5) / span) * height
+
+  // 背景按十二平均律上色：1234567（自然音级）亮浅橙，半音（黑键）行浅褐；
+  // 整层贴着背景画，网格、音符、曲线都压在它上面
+  const blackKeys = new Set([1, 3, 6, 8, 10])
+  for (let midi = range.low; midi <= range.high; midi += 1) {
+    const yTop = height - ((midi - range.low + 1) / span) * height
+    ctx.fillStyle = blackKeys.has(((midi % 12) + 12) % 12)
+      ? 'rgba(141, 110, 76, 0.20)' // 浅褐
+      : 'rgba(255, 183, 77, 0.16)' // 亮浅橙
+    ctx.fillRect(0, yTop, width, rowH + 0.5)
+  }
+
+  // 半音网格：行分界线加粗提亮，C 行最粗并标音名
+  ctx.font = palette.fontSmall
+  ctx.textAlign = 'left'
+  for (let midi = range.low; midi <= range.high; midi += 1) {
+    const y = Math.round(yCenter(midi) + rowH / 2) + 0.5
+    const isC = midi % 12 === 0
+    ctx.strokeStyle = isC ? palette.cursor : palette.axis
+    ctx.lineWidth = isC ? 2.5 : 1.5
+    ctx.beginPath()
+    ctx.moveTo(0, y)
+    ctx.lineTo(width, y)
+    ctx.stroke()
+    if (isC) {
+      ctx.fillStyle = palette.labelDim
+      ctx.fillText(`C${Math.floor(midi / 12) - 1}`, 3, y - 3)
+    }
+  }
+
+  // 音符块：与窗口相交的都画，OpenUtau 风格的圆角横条
+  const blockH = Math.max(3, rowH * 0.7)
+  for (const note of notes) {
+    const end = note.start_sec + note.dur_sec
+    if (end <= win.from || note.start_sec >= win.to) continue
+    if (note.midi < range.low || note.midi > range.high) continue
+    const x = xFor(note.start_sec)
+    const w = Math.max(3, xFor(end) - x)
+    const y = yCenter(note.midi) - blockH / 2
+    ctx.beginPath()
+    ctx.roundRect(x + 0.5, y + 0.5, Math.max(1, w - 1), blockH, 3)
+    ctx.fillStyle = color
+    ctx.globalAlpha = 0.55
+    ctx.fill()
+    ctx.globalAlpha = 1
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+  }
+
+  drawPitchCurve(ctx, size, curve, range, color, win)
+
+  // 中心光标
   const cursorX = Math.round(xFor(Math.min(Math.max(win.cursor, win.from), win.to))) + 0.5
   ctx.strokeStyle = palette.cursor
+  ctx.lineWidth = 2
   ctx.beginPath()
   ctx.moveTo(cursorX, 0)
   ctx.lineTo(cursorX, height)
   ctx.stroke()
-
-  ctx.fillStyle = palette.labelDim
-  ctx.fillText(`${Math.round(win.from - win.cursor)}s`, 4, height - 4)
-  ctx.textAlign = 'right'
-  ctx.fillText(`+${Math.round(win.to - win.cursor)}s`, width - 4, height - 4)
-  ctx.textAlign = 'left'
 }

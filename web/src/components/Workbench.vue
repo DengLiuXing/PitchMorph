@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { JobMeta, NotesParams, Peaks, PitchCurve } from '@/api/types'
+import type { RollNote } from '@/lib/canvas'
 import { isActive, stemLabel, stemRank } from '@/api/types'
 import MdIconButton from '@/components/MdIconButton.vue'
 import NotesDialog from '@/components/NotesDialog.vue'
@@ -34,6 +35,7 @@ const {
   muted,
   solo,
   attach,
+  detach,
   setDuration,
   pause,
   toggle,
@@ -81,13 +83,90 @@ function notesReady(name: string): boolean {
   return props.job.notes?.[name]?.state === 'ready'
 }
 
+/** 音符提取进行中：菜单里的导出项转圈 */
+function notesRunning(name: string): boolean {
+  const state = props.job.notes?.[name]?.state
+  return state === 'queued' || state === 'running'
+}
+
+function notesFailure(name: string): string | undefined {
+  const entry = props.job.notes?.[name]
+  return entry?.state === 'failed' ? entry.failure : undefined
+}
+
+/** 提取完成的浮层提示：菜单会被 outside-click 关掉，光靠菜单里的状态不够 */
+const toast = ref('')
+let toastTimer: number | undefined
+
+function showToast(text: string): void {
+  toast.value = text
+  if (toastTimer) window.clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => (toast.value = ''), 4000)
+}
+
+const announcedNotes = ref<Record<string, boolean>>({})
+
+watch(
+  () => props.job.notes,
+  (value) => {
+    for (const [name, entry] of Object.entries(value ?? {})) {
+      if (entry.state === 'ready' && !announcedNotes.value[name]) {
+        announcedNotes.value[name] = true
+        showToast(`${name} 的音符已就绪：轨道菜单里可导出 OpenUtau 工程或 MIDI`)
+      }
+      if (entry.state === 'failed' && !announcedNotes.value[name]) {
+        announcedNotes.value[name] = true
+        showToast(`${name} 的音符提取失败：${entry.failure ?? '未知原因'}`)
+      }
+    }
+  },
+  { deep: true },
+)
+
+const announcedRefine = ref<Record<string, boolean>>({})
+
+watch(
+  () => props.job.refine,
+  (value) => {
+    for (const [name, entry] of Object.entries(value ?? {})) {
+      if (announcedRefine.value[name]) continue
+      if (entry.state === 'ready') {
+        announcedRefine.value[name] = true
+        showToast(`${stemLabel(name)} 提纯完成，恢复播放`)
+      } else if (entry.state === 'failed') {
+        announcedRefine.value[name] = true
+        showToast(`${stemLabel(name)} 提纯失败：${entry.failure ?? '未知原因'}`)
+      }
+    }
+  },
+  { deep: true },
+)
+
 async function startRefine(name: string): Promise<void> {
+  // 提纯开始后原轨就从界面上拿掉了，先停掉播放再提交
+  pause()
   try {
     await api.startRefine(props.job.id, name)
+    showToast(`${stemLabel(name)} 提纯中，推理完成前无法播放`)
     emit('refresh')
   } catch (issue) {
     notice.value = (issue as Error).message
   }
+}
+
+/** 有提纯在跑就锁住播放：派生轨还没写出来 */
+const refineBlocking = computed(() =>
+  Object.values(props.job.refine ?? {}).some(
+    (entry) => entry.state === 'queued' || entry.state === 'running',
+  ),
+)
+
+function togglePlayback(): void {
+  if (refineBlocking.value) {
+    showToast('人声提纯推理中，请等待完成后再播放')
+    return
+  }
+  toggle()
 }
 
 function openNotes(name: string): void {
@@ -98,8 +177,10 @@ async function submitNotes(params: NotesParams): Promise<void> {
   if (!notesDialog.value) return
   notesBusy.value = true
   try {
-    await api.startNotes(props.job.id, notesDialog.value.stem, params)
+    const stem = notesDialog.value.stem
+    await api.startNotes(props.job.id, stem, params)
     notesDialog.value = null
+    showToast(`${stemLabel(stem)} 音符提取已开始，完成后菜单里可导出工程与 MIDI`)
     emit('refresh')
   } catch (issue) {
     notice.value = (issue as Error).message
@@ -114,18 +195,40 @@ function exportNotes(fmt: 'ustx' | 'mid'): void {
 }
 
 
-const tracks = computed(() =>
-  // 按后端返回的 stems 渲染：「仅人声」档只有一条，写死四条会渲染出 404 空轨
-  [...props.job.stems]
-    .sort((left, right) => stemRank(left.name) - stemRank(right.name))
-    .map((stem) => ({
+/** 一条轨在界面上的样子；占位轨没有 url，也就没有音频与波形 */
+interface TrackView {
+  name: string
+  label: string
+  color: string
+  url?: string
+  downloadName?: string
+  /** 提纯占位轨：推理完成前置灰 */
+  pending?: boolean
+}
+
+const tracks = computed<TrackView[]>(() => {
+  const list: TrackView[] = []
+  for (const stem of props.job.stems) {
+    const refine = props.job.refine?.[stem.name]
+    if (refine?.state === 'queued' || refine?.state === 'running') {
+      // 提纯中：原轨先拿掉，用两条置灰占位轨占住它的位置
+      for (const role of ['lead', 'backing'] as const) {
+        const name = `${stem.name}_${role}`
+        list.push({ name, label: stemLabel(name), color: stemColor(stem.name), pending: true })
+      }
+      continue
+    }
+    if (refine?.state === 'ready') continue // 提纯完成：原轨由 meta 里的两条派生轨代替
+    list.push({
       name: stem.name,
       label: stemLabel(stem.name),
       color: stemColor(stem.name),
       url: api.stemUrl(props.job.id, stem.name),
       downloadName: api.downloadName(props.job.filename, stem.name),
-    })),
-)
+    })
+  }
+  return list.sort((left, right) => stemRank(left.name) - stemRank(right.name))
+})
 
 const hasStems = computed(() => props.job.stems.length > 0)
 const running = computed(() => isActive(props.job.state))
@@ -238,10 +341,25 @@ function onUp(event: PointerEvent): void {
 
 // ---- 音频、波形与音高 ----
 
+const attached = new Set<string>()
+
 function register(name: string, element: Element | null): void {
   if (!(element instanceof HTMLAudioElement)) return
+  if (!tracks.value.find((track) => track.name === name)?.url) return // 占位轨没有音频
+  attached.add(name)
   attach(name, element)
 }
+
+// 轨从界面上消失（提纯后原轨被派生轨代替）就从播放器摘掉，避免后台继续出声
+watch(tracks, (list) => {
+  const alive = new Set(list.filter((track) => track.url).map((track) => track.name))
+  for (const name of attached) {
+    if (!alive.has(name)) {
+      detach(name)
+      attached.delete(name)
+    }
+  }
+})
 
 function loadPeaks(): void {
   if (totalSeconds.value > 0) setDuration(totalSeconds.value)
@@ -321,6 +439,26 @@ watch(
   { deep: true, immediate: true },
 )
 
+// 音符提取完成：取回音符块给全屏钢琴卷帘
+const monitorNotes = ref<RollNote[] | null>(null)
+
+watch(
+  () => [monitor.value, props.job.notes] as const,
+  ([name, notes]) => {
+    if (!name || notes?.[name]?.state !== 'ready') {
+      monitorNotes.value = null
+      return
+    }
+    api
+      .notes(props.job.id, name)
+      .then((payload) => {
+        monitorNotes.value = payload.segments ?? null
+      })
+      .catch(() => (monitorNotes.value = null))
+  },
+  { deep: true, immediate: true },
+)
+
 // ---- 快捷键 ----
 
 function onKeydown(event: KeyboardEvent): void {
@@ -329,7 +467,7 @@ function onKeydown(event: KeyboardEvent): void {
 
   if (event.code === 'Space') {
     event.preventDefault() // 否则焦点在按钮上会再触发一次 click
-    toggle()
+    togglePlayback()
   } else if (event.code === 'ArrowLeft') {
     event.preventDefault()
     nudge(-5)
@@ -345,6 +483,11 @@ function onKeydown(event: KeyboardEvent): void {
 
 let observer: ResizeObserver | null = null
 
+// 进度条高度：全屏钢琴卷帘只盖到进度条上沿，两者并列
+const transportEl = ref<HTMLElement | null>(null)
+const transportHeight = ref(0)
+let transportObserver: ResizeObserver | null = null
+
 onMounted(() => {
   observer = new ResizeObserver(measure)
   if (scroller.value) observer.observe(scroller.value)
@@ -352,10 +495,18 @@ onMounted(() => {
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('resize', measure)
   api.languages().then((data) => (notesLanguages.value = data.languages)).catch(() => undefined)
+  if (transportEl.value) {
+    transportObserver = new ResizeObserver(
+      () => (transportHeight.value = transportEl.value?.offsetHeight ?? 0),
+    )
+    transportObserver.observe(transportEl.value)
+    transportHeight.value = transportEl.value.offsetHeight
+  }
 })
 
 onBeforeUnmount(() => {
   observer?.disconnect()
+  transportObserver?.disconnect()
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('resize', measure)
   cancelAnimationFrame(frame)
@@ -377,6 +528,14 @@ onBeforeUnmount(() => {
       class="shrink-0 bg-error-container px-4 py-1.5 md-label-medium text-on-error-container"
     >
       {{ notice }}
+    </div>
+
+    <!-- 提取完成的浮层提示：菜单会被 outside-click 关掉，光靠菜单里的状态不够 -->
+    <div
+      v-if="toast"
+      class="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-primary-container px-4 py-2 md-label-large text-on-primary-container shadow-lg"
+    >
+      {{ toast }}
     </div>
 
     <!-- 还没出音轨：一行提示就够，进度看顶栏，别用整块卡片吃掉页面 -->
@@ -422,7 +581,10 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-for="track in tracks" :key="track.name" class="lane-row">
-            <div class="lane-head" :data-dimmed="isSilent(track.name) ? 'true' : 'false'">
+            <div
+              class="lane-head"
+              :data-dimmed="track.pending || isSilent(track.name) ? 'true' : 'false'"
+            >
               <div class="flex items-center gap-1">
                 <span class="lane-name" :title="track.label">
                   <i class="lane-swatch" :style="{ background: track.color }" />
@@ -432,6 +594,29 @@ onBeforeUnmount(() => {
                     class="md-chip md-chip--primary md-label-small !h-[18px] !px-1.5"
                   >
                     音高
+                  </span>
+                  <span
+                    v-if="track.pending"
+                    class="md-chip md-chip--primary md-label-small !h-[18px] !px-1.5 inline-flex items-center gap-1"
+                    title="人声提纯推理中，完成前无法播放"
+                  >
+                    <Loader2 :size="12" class="animate-spin" />
+                    提纯
+                  </span>
+                  <span
+                    v-if="notesRunning(track.name)"
+                    class="md-chip md-chip--primary md-label-small !h-[18px] !px-1.5 inline-flex items-center gap-1"
+                    title="正在提取音符"
+                  >
+                    <Loader2 :size="12" class="animate-spin" />
+                    音符
+                  </span>
+                  <span
+                    v-else-if="notesReady(track.name)"
+                    class="md-chip md-chip--primary md-label-small !h-[18px] !px-1.5"
+                    title="音符已就绪：轨道菜单里可导出 OpenUtau 工程或 MIDI"
+                  >
+                    音符
                   </span>
                 </span>
 
@@ -482,7 +667,7 @@ onBeforeUnmount(() => {
 
             <div
               class="lane-track"
-              :data-dimmed="isSilent(track.name) ? 'true' : 'false'"
+              :data-dimmed="track.pending || isSilent(track.name) ? 'true' : 'false'"
               @pointerdown="onDown"
               @pointermove="onMove"
               @pointerup="onUp"
@@ -495,6 +680,7 @@ onBeforeUnmount(() => {
                 :scroll-x="scrollX"
                 :view-width="viewW"
                 :color="track.color"
+                :placeholder="track.pending ? '提纯推理中…' : undefined"
               />
             </div>
           </div>
@@ -521,23 +707,27 @@ onBeforeUnmount(() => {
           :pending="['queued', 'running'].includes(monitorPitch?.state ?? '')"
           :percent="Math.round((monitorPitch?.fraction ?? 0) * 100)"
           :failure="monitorPitch?.failure ?? null"
+          :notes="monitorNotes"
+          :bottom-inset="transportHeight"
           @close="monitor = null"
         />
       </div>
 
-      <Transport
-        :playing="playing"
-        :position="position"
-        :duration="totalSeconds"
-        :hint="hint"
-        @toggle="toggle"
-        @seek="seek"
-      />
+      <div ref="transportEl" class="shrink-0">
+        <Transport
+          :playing="playing"
+          :position="position"
+          :duration="totalSeconds"
+          :hint="hint"
+          @toggle="togglePlayback"
+          @seek="seek"
+        />
+      </div>
 
       <div class="hidden">
         <audio
           v-for="track in tracks"
-          :key="track.url"
+          :key="track.url ?? track.name"
           :src="track.url"
           preload="auto"
           crossorigin="anonymous"
@@ -554,20 +744,27 @@ onBeforeUnmount(() => {
       :can-refine="canRefine(menu.name)"
       :can-notes="true"
       :notes-ready="notesReady(menu.name)"
+      :notes-running="notesRunning(menu.name)"
+      :notes-failure="notesFailure(menu.name)"
       @pitch="toggleMonitor(menu.name)"
       @refine="startRefine(menu.name); menu = null"
-      @notes="openNotes(menu.name); menu = null"
-      @export="exportNotes"
+      @notes="openNotes(menu.name)"
+      @export="exportNotes($event); menu = null"
       @close="menu = null"
     />
   </div>
 
-    <NotesDialog
+    <!-- 参数弹层是文档流外的固定底板：否则会被 h-full 的工作台挤出视口，永远点不到开始 -->
+    <div
       v-if="notesDialog"
-      :stem="notesDialog.stem"
-      :languages="notesLanguages"
-      :busy="notesBusy"
-      @close="notesDialog = null"
-      @submit="submitNotes"
-    />
+      class="fixed inset-x-0 bottom-0 z-50 max-h-[80vh] overflow-y-auto md-scroll"
+    >
+      <NotesDialog
+        :stem="notesDialog.stem"
+        :languages="notesLanguages"
+        :busy="notesBusy"
+        @close="notesDialog = null"
+        @submit="submitNotes"
+      />
+    </div>
 </template>

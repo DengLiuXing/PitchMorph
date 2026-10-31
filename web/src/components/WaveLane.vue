@@ -12,15 +12,34 @@ const props = defineProps<{
   scrollX: number
   viewWidth: number
   color: string
+  /** 没有波形时的占位文案，默认「波形生成中」 */
+  placeholder?: string
 }>()
 
 // 画布只覆盖视口（time offset = scrollX/pps），缩放与横滚都是重绘而不是拉大位图
 const { canvas, paint } = useCanvas((ctx, size) =>
-  drawWave(ctx, size, props.peaks, props.duration, props.pps, props.scrollX / props.pps, props.color),
+  drawWave(
+    ctx,
+    size,
+    props.peaks,
+    props.duration,
+    props.pps,
+    props.scrollX / props.pps,
+    props.color,
+    props.placeholder,
+  ),
 )
 
 watch(
-  () => [props.peaks, props.duration, props.pps, props.scrollX, props.viewWidth, props.color],
+  () => [
+    props.peaks,
+    props.duration,
+    props.pps,
+    props.scrollX,
+    props.viewWidth,
+    props.color,
+    props.placeholder,
+  ],
   paint,
   { immediate: true },
 )

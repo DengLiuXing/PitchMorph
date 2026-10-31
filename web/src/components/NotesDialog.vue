@@ -12,8 +12,8 @@ const emit = defineEmits<{ (event: 'close'): void; (event: 'submit', params: Not
 const params = ref<NotesParams>({
   tempo: 120,
   sampling_steps: 8,
-  boundary_threshold: 0.2,
-  boundary_radius: 2,
+  boundary_threshold: 0.1,
+  boundary_radius: 1,
   score_threshold: 0.2,
   batch_size: 1,
   max_batch_duration: 60,
@@ -117,7 +117,7 @@ function submit(): void {
       </label>
 
       <p class="md-body-small text-on-surface-variant">
-        音符边界由 GAME 给出，音高取自 FCPE 曲线在该段内的中位数；导出 OpenUtau 工程与 MIDI 时会带上这条音高线。
+        音符边界与音高均由 GAME 模型给出（与 OpenUtau 转录同口径）；导出 OpenUtau 工程与 MIDI 时会带上 FCPE 音高线还原颤音与滑音。
       </p>
 
       <button

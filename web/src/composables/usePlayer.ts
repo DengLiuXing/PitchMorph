@@ -174,6 +174,19 @@ export function usePlayer() {
     return solo.value.length > 0 ? !solo.value.includes(name) : muted.value.includes(name)
   }
 
+  /** 轨从界面上消失（如提纯后原轨被派生轨代替）：从播放器里摘掉，别让它在后台出声 */
+  function detach(name: string): void {
+    const node = nodes.get(name)
+    if (!node) return
+    node.audio.pause()
+    node.gain.disconnect()
+    nodes.delete(name)
+    if (masterName.value === name) {
+      masterName.value = [...nodes.keys()][0] ?? null
+      clockReady = false
+    }
+  }
+
   function reset(): void {
     pause()
     clockReady = false
@@ -215,6 +228,7 @@ export function usePlayer() {
     toggleSolo,
     setVolume,
     isSilent,
+    detach,
     reset,
   }
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Activity, FileAudio, FolderDown, Music2, Sparkles } from 'lucide-vue-next'
+import { Activity, FileAudio, FolderDown, Loader2, Music2, Sparkles } from 'lucide-vue-next'
 
 import MdMenu from '@/components/MdMenu.vue'
 
@@ -13,6 +13,10 @@ defineProps<{
   canNotes: boolean
   /** 导出要等音符算完 */
   notesReady: boolean
+  /** 音符正在提取：导出项转圈 */
+  notesRunning: boolean
+  /** 音符提取失败时的原因 */
+  notesFailure?: string
 }>()
 const emit = defineEmits<{
   (event: 'pitch'): void
@@ -55,31 +59,36 @@ const emit = defineEmits<{
       type="button"
       class="md-menu-item"
       role="menuitem"
-      :disabled="!canNotes"
+      :disabled="!canNotes || notesRunning"
       @click="emit('notes')"
     >
       <Music2 :size="18" />
       提取音符
+      <Loader2 v-if="notesRunning" :size="16" class="ml-auto animate-spin" />
+      <span v-else-if="notesReady" class="md-menu-flag">已就绪</span>
+      <span v-else-if="notesFailure" class="md-menu-flag">失败</span>
     </button>
     <button
       type="button"
       class="md-menu-item"
       role="menuitem"
-      :disabled="!notesReady"
+      :disabled="!notesReady || notesRunning"
       @click="emit('export', 'ustx')"
     >
       <FolderDown :size="18" />
       导出 OpenUtau 工程
+      <Loader2 v-if="notesRunning" :size="16" class="ml-auto animate-spin" />
     </button>
     <button
       type="button"
       class="md-menu-item"
       role="menuitem"
-      :disabled="!notesReady"
+      :disabled="!notesReady || notesRunning"
       @click="emit('export', 'mid')"
     >
       <FileAudio :size="18" />
       导出 MIDI
+      <Loader2 v-if="notesRunning" :size="16" class="ml-auto animate-spin" />
     </button>
   </MdMenu>
 </template>

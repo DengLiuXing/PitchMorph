@@ -130,12 +130,15 @@ export function isActive(state: JobState): boolean {
   return ACTIVE_STATES.includes(state)
 }
 
-/** 任务本身或它身上的音高还在跑：决定要不要继续轮询 */
+/** 任务本身或它身上的音高/提纯/音符还在跑：决定要不要继续轮询 */
 export function needsPolling(job: JobMeta): boolean {
   if (isActive(job.state)) return true
-  return Object.values(job.pitch ?? {}).some(
-    (entry) => entry.state === 'queued' || entry.state === 'running',
-  )
+  const pending = (record: Record<string, PitchState> | undefined): boolean =>
+    Object.values(record ?? {}).some(
+      (entry) => entry.state === 'queued' || entry.state === 'running',
+    )
+  // 提纯与音符不改变任务 state（一直是 ready），漏掉它们轮询就会提前停摆
+  return pending(job.pitch) || pending(job.refine) || pending(job.notes)
 }
 
 export const STEM_LABELS: Record<string, string> = {
